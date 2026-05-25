@@ -383,6 +383,7 @@ function renderCandidateSegments(result: SteeringCenterDiagnosticResult): string
 function renderFilters(filters: SteeringWindowFilters): string {
   const filterRows = [
     ["Max segments checked", String(filters.maxSegmentsToScan)],
+    ["Min rlog segments before early stop", String(filters.minSegmentsBeforeEarlyStop)],
     ["Max qlog candidate segments checked", String(filters.maxQlogSegmentsToScan)],
     ["Top qlog candidates used", String(filters.candidateSegmentsToScan)],
     ["Min speed", formatSpeed(filters.minSpeedMps)],

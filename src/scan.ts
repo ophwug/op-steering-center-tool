@@ -181,6 +181,7 @@ export type SteeringConfidence = "high" | "medium" | "low" | "none";
 
 export interface SteeringWindowFilters {
   maxSegmentsToScan: number;
+  minSegmentsBeforeEarlyStop: number;
   maxQlogSegmentsToScan: number;
   candidateSegmentsToScan: number;
   minSpeedMps: number;
@@ -265,8 +266,9 @@ interface SteeringSample extends SteeringSampleSummary {
 
 const DEFAULT_STEERING_FILTERS: SteeringWindowFilters = {
   maxSegmentsToScan: 20,
+  minSegmentsBeforeEarlyStop: 8,
   maxQlogSegmentsToScan: 120,
-  candidateSegmentsToScan: 8,
+  candidateSegmentsToScan: 16,
   minSpeedMps: 8,
   maxAbsSteeringAngleDeg: 15,
   maxAbsSteeringRateDeg: 2,
@@ -510,6 +512,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
       const interimStableSamples = samplesInsideWindows(samples, interimWindows);
       const interimDuration = sumWindowDuration(interimWindows);
       if (
+        decodedSegments >= filters.minSegmentsBeforeEarlyStop &&
         interimWindows.length >= filters.minHighConfidenceWindows &&
         interimStableSamples.length >= filters.minHighConfidenceSamples &&
         interimDuration >= filters.minHighConfidenceDurationSec
