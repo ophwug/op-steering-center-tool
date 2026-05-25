@@ -177,11 +177,22 @@ interface SteeringSegmentScan {
   carStates: CarStateMessage[];
 }
 
+interface SteeringSegmentWork {
+  logUrl: string;
+  segment: number;
+  index: number;
+}
+
+type SteeringSegmentWorkResult =
+  | { ok: true; work: SteeringSegmentWork; scan: SteeringSegmentScan }
+  | { ok: false; work: SteeringSegmentWork; error: unknown };
+
 export type SteeringConfidence = "high" | "medium" | "low" | "none";
 
 export interface SteeringWindowFilters {
   maxSegmentsToScan: number;
   minSegmentsBeforeEarlyStop: number;
+  parallelRlogDownloads: number;
   maxQlogSegmentsToScan: number;
   candidateSegmentsToScan: number;
   minSpeedMps: number;
@@ -267,6 +278,7 @@ interface SteeringSample extends SteeringSampleSummary {
 const DEFAULT_STEERING_FILTERS: SteeringWindowFilters = {
   maxSegmentsToScan: 20,
   minSegmentsBeforeEarlyStop: 8,
+  parallelRlogDownloads: 4,
   maxQlogSegmentsToScan: 120,
   candidateSegmentsToScan: 16,
   minSpeedMps: 8,
@@ -496,42 +508,60 @@ export async function scanRouteForSteeringCenterDiagnostic(
   let totalCarStateMessages = 0;
   const candidateSegments = await scanQlogSteeringCandidates(context, filters, onProgress);
   const scannedLogUrls = selectSteeringRlogUrls(context.logUrls, candidateSegments, filters);
+  const rlogWork = scannedLogUrls.map((logUrl, index) => ({
+    logUrl,
+    index,
+    segment: segmentFromUrl(logUrl),
+  }));
 
-  for (let index = 0; index < scannedLogUrls.length; index += 1) {
-    const logUrl = scannedLogUrls[index];
-    const segment = segmentFromUrl(logUrl);
-    try {
-      const segmentScan = await downloadSteeringSegmentScan(logUrl, segment, index, scannedLogUrls.length, context.source, onProgress);
+  for (let start = 0; start < rlogWork.length; start += filters.parallelRlogDownloads) {
+    const batch = rlogWork.slice(start, start + filters.parallelRlogDownloads);
+    const batchResults = await Promise.all(
+      batch.map(async (work): Promise<SteeringSegmentWorkResult> => {
+        try {
+          const scan = await downloadSteeringSegmentScan(work.logUrl, work.segment, work.index, rlogWork.length, context.source, onProgress);
+          return { ok: true, work, scan };
+        } catch (error) {
+          return { ok: false, work, error };
+        }
+      }),
+    );
+
+    for (const result of batchResults.sort((a, b) => a.work.index - b.work.index)) {
+      if (!result.ok) {
+        const failure = { logUrl: result.work.logUrl, segment: result.work.segment, message: readableLogError(result.error) };
+        readFailures.push(failure);
+        onProgress({
+          phase: "decode",
+          message: `Could not read ${logFileKind(context.source)} segment ${result.work.segment}: ${failure.message}`,
+          current: result.work.index + 1,
+          total: rlogWork.length,
+        });
+        continue;
+      }
+
+      const segmentScan = result.scan;
       decodedSegments += 1;
       totalCarStateMessages += segmentScan.carStates.length;
       initData ??= segmentScan.initData;
       context.routeInfo = routeInfoWithDeviceType(context.routeInfo, context.routeName, segmentScan.deviceType);
-      samples.push(...segmentScan.carStates.map((message) => summarizeSteeringSample(message, logUrl, segment)));
+      samples.push(...segmentScan.carStates.map((message) => summarizeSteeringSample(message, result.work.logUrl, result.work.segment)));
+    }
 
-      const interimWindows = findStableSteeringWindows(samples, filters);
-      const interimStableSamples = samplesInsideWindows(samples, interimWindows);
-      const interimDuration = sumWindowDuration(interimWindows);
-      if (
-        decodedSegments >= filters.minSegmentsBeforeEarlyStop &&
-        interimWindows.length >= filters.minHighConfidenceWindows &&
-        interimStableSamples.length >= filters.minHighConfidenceSamples &&
-        interimDuration >= filters.minHighConfidenceDurationSec
-      ) {
-        onProgress({
-          phase: "done",
-          message: `Found ${interimWindows.length} stable straight-driving windows after ${decodedSegments} ${logFileKind(context.source)} segment(s).`,
-        });
-        return buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters, candidateSegments);
-      }
-    } catch (error) {
-      const failure = { logUrl, segment, message: readableLogError(error) };
-      readFailures.push(failure);
+    const interimWindows = findStableSteeringWindows(samples, filters);
+    const interimStableSamples = samplesInsideWindows(samples, interimWindows);
+    const interimDuration = sumWindowDuration(interimWindows);
+    if (
+      decodedSegments >= filters.minSegmentsBeforeEarlyStop &&
+      interimWindows.length >= filters.minHighConfidenceWindows &&
+      interimStableSamples.length >= filters.minHighConfidenceSamples &&
+      interimDuration >= filters.minHighConfidenceDurationSec
+    ) {
       onProgress({
-        phase: "decode",
-        message: `Could not read ${logFileKind(context.source)} segment ${segment}: ${failure.message}`,
-        current: index + 1,
-        total: scannedLogUrls.length,
+        phase: "done",
+        message: `Found ${interimWindows.length} stable straight-driving windows after ${decodedSegments} ${logFileKind(context.source)} segment(s).`,
       });
+      return buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters, candidateSegments);
     }
   }
 
