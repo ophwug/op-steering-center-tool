@@ -1,30 +1,28 @@
-# openpilot fingerprint route debugger
+# openpilot steering centering diagnostic
 
-A small all-client-side web app that scans a public openpilot route for
-fingerprint debugging evidence.
+A small all-client-side web app that scans a public openpilot route and estimates
+logged steering wheel center from `carState.steeringAngleDeg`.
 
-It fetches comma's public route file list, downloads qlogs first when available,
-falls back to rlogs, supports `.zst` and `.bz2`, decompresses in the browser, and
-decodes just enough Cap'n Proto to summarize:
+It fetches comma's public route file list, requires uploaded rlogs for full-rate
+`carState`, supports `.zst` and `.bz2`, decompresses in the browser, and decodes
+just enough Cap'n Proto to summarize:
 
-- `CarParams`, including the selected `carFingerprint`, fingerprint source, mode
-  flags, redacted VIN, and `carFw`
-- firmware versions as Python `bytes` literals and `FW_VERSIONS`-style snippets
-  for opendbc/openpilot firmware files
-- startup and recognition events such as `carUnrecognized` and `dashcamMode`
-- compact CAN evidence grouped by bus/source, address, message length, count,
-  and first/last segment
+- `carState` speed, steering angle, steering rate, steering torque, steering
+  pressed, standstill, blinker, and yaw-rate fields
+- stable straight-driving windows that pass speed, steering-rate, blinker,
+  standstill, driver-steering, sample-gap, duration, and angle-range filters
+- the median steeringAngleDeg across accepted windows, plus confidence, spread,
+  caveats, and supporting sample log times
 
-The report shows debugging options separately for stock openpilot and
-SunnyPilot's SunnyLink/car selector path. When a route does not fingerprint, it
-also mentions hardcoded-fp as non-prescriptive fork context. Firmware evidence
-is copy-pastable for human debugging.
+The result is meant to package route evidence for human review when a vehicle
+appears to need steering wheel centering or steering sensor offset diagnosis. It
+does not replace a mechanical alignment check.
 
 ## Run locally
 
 ```sh
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Open the local URL printed by Vite.
@@ -33,7 +31,7 @@ Open the local URL printed by Vite.
 
 Use these settings:
 
-- Build command: `npm run build`
+- Build command: `pnpm build`
 - Build output directory: `dist`
 - Node version: current LTS or newer
 
@@ -41,14 +39,11 @@ No server-side function is required.
 
 ## Deploy on GitHub Pages
 
-This repo includes a GitHub Actions workflow at `.github/workflows/pages.yml`.
-Pushes to `main` build the app and deploy `dist` to GitHub Pages.
-
-For the `ophwug/op-fingerprint-reading-tool` project page, the app is built
-with the Vite base path `/op-fingerprint-reading-tool/`, so the expected URL is:
+For the `ophwug/op-steering-center-tool` project page, the app is built with the
+Vite base path `/op-steering-center-tool/`, so the expected URL is:
 
 ```text
-https://ophwug.github.io/op-fingerprint-reading-tool/
+https://ophwug.github.io/op-steering-center-tool/
 ```
 
 ## Getting a usable route
@@ -68,17 +63,15 @@ You can turn Public access off again after reading the route.
 
 ## Privacy
 
-The app runs in the browser and does not store route data. VIN is redacted in
-the visible report by default. Firmware bytes are intentionally public in the
-debugging report because they are core fingerprint evidence.
+The app runs in the browser and does not store route data. Private route access,
+when needed, uses a JWT stored only in the current browser's local storage.
 
 ## Useful commands
 
 ```sh
-npm test
-npm run test:smoke
-npm run build
+pnpm test
+pnpm test:smoke
+pnpm build
 ```
 
-`test:smoke` uses the public demo route from `op-replay-clipper`, so it needs
-network access.
+`test:smoke` uses a public demo route, so it needs network access.

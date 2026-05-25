@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalibrationMessage, FingerprintLogMessages } from "./capnp";
-import { findDeviceType, findFingerprintLogMessages } from "./capnp";
+import { findCarStateMessages, findDeviceType, findFingerprintLogMessages } from "./capnp";
 import { decompressLog } from "./decompress";
-import { scanRouteForFingerprintDebug, scanRouteForInvalidCalibration } from "./scan";
+import { scanRouteForFingerprintDebug, scanRouteForInvalidCalibration, scanRouteForSteeringCenterDiagnostic } from "./scan";
 
 vi.mock("./decompress", () => ({
   decompressLog: vi.fn((bytes: Uint8Array, url: string) => {
@@ -20,6 +20,7 @@ vi.mock("./capnp", () => ({
     onroadEvents: [],
     canMessages: [],
   })),
+  findCarStateMessages: vi.fn(() => []),
   findCalibrationMessages: vi.fn(() => [
     {
       logMonoTime: 1n,
@@ -244,5 +245,80 @@ describe("full route scan", () => {
     expect(result.totalSegments).toBe(3);
     expect(fetchMock).not.toHaveBeenCalledWith("https://example.test/route/1/qlog.zst");
     expect(fetchMock).not.toHaveBeenCalledWith("https://example.test/route/2/qlog.zst");
+  });
+
+  it("estimates steering center from stable straight-driving carState windows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/files")) {
+          return Response.json({
+            logs: ["https://example.test/route/0/rlog.zst", "https://example.test/route/1/rlog.zst"],
+          });
+        }
+        if (url.endsWith("/v1/route/test%7Croute/")) {
+          return Response.json({ fullname: "test|route" });
+        }
+        return new Response(new Uint8Array([0]));
+      }),
+    );
+    vi.mocked(findFingerprintLogMessages).mockReturnValue({
+      ...emptyFingerprintLogMessages(),
+      initData: {
+        logMonoTime: 1n,
+        deviceType: "mici",
+        version: "0.9.9",
+        gitCommit: "",
+        gitBranch: "release",
+        gitRemote: "https://github.com/commaai/openpilot",
+        gitSrcCommit: "",
+      },
+      deviceType: "mici",
+    });
+    vi.mocked(findCarStateMessages).mockImplementation(() =>
+      Array.from({ length: 80 }, (_, index) => ({
+        logMonoTime: BigInt(index) * 100_000_000n,
+        vEgo: 22,
+        aEgo: 0,
+        yawRate: 0,
+        steeringAngleDeg: index % 2 === 0 ? 1.4 : 1.6,
+        steeringRateDeg: 0.2,
+        steeringTorque: 3,
+        steeringPressed: false,
+        standstill: false,
+        leftBlinker: false,
+        rightBlinker: false,
+      })),
+    );
+
+    const result = await scanRouteForSteeringCenterDiagnostic("test|route", () => {});
+
+    expect(result.resultType).toBe("estimated");
+    expect(result.confidence).not.toBe("none");
+    expect(result.medianSteeringAngleDeg).toBeCloseTo(1.5);
+    expect(result.stableWindows.length).toBeGreaterThan(0);
+    expect(result.filters.minSpeedMps).toBe(8);
+    expect(result.caveats.join(" ")).toContain("not a mechanical alignment diagnosis");
+  });
+
+  it("fast-fails steering diagnostics when only qlogs are uploaded", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/files")) {
+          return Response.json({ qlogs: ["https://example.test/route/0/qlog.zst"] });
+        }
+        if (url.endsWith("/v1/route/test%7Croute/")) {
+          return Response.json({ fullname: "test|route" });
+        }
+        return new Response(new Uint8Array([0]));
+      }),
+    );
+
+    await expect(scanRouteForSteeringCenterDiagnostic("test|route", () => {})).rejects.toThrow(
+      "This diagnostic requires uploaded rlogs",
+    );
   });
 });

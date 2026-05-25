@@ -1,5 +1,5 @@
 export const API_BASE_URL = "https://api.comma.ai";
-export const GITHUB_REPO_URL = "https://github.com/ophwug/op-fingerprint-reading-tool";
+export const GITHUB_REPO_URL = "https://github.com/ophwug/op-steering-center-tool";
 export const COMMA_JWT_PORTAL_URL = "https://jwt.comma.ai/";
 export const OPENPILOT_FINGERPRINTING_URL = "https://github.com/commaai/openpilot/wiki/Fingerprinting";
 export const OPENPILOT_NIGHTLY_DEV_INSTALLER_URL = "https://installer.comma.ai/commaai/nightly-dev";
@@ -49,6 +49,7 @@ export const LIVE_CALIBRATION_UNION_TAG = 18;
 export const CAN_UNION_TAG = 4;
 export const INIT_DATA_UNION_TAG = 0;
 export const CAR_PARAMS_UNION_TAG = 67;
+export const CAR_STATE_UNION_TAG = 21;
 export const ONROAD_EVENTS_UNION_TAG = 132;
 
 export const FINGERPRINT_EVENT_NAMES: Record<number, string> = {

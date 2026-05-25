@@ -2,6 +2,7 @@ import {
   CALIBRATION_STATUS_NAMES,
   CAN_UNION_TAG,
   CAR_PARAMS_UNION_TAG,
+  CAR_STATE_UNION_TAG,
   FINGERPRINT_EVENT_NAMES,
   FINGERPRINT_SOURCE_NAMES,
   INIT_DATA_UNION_TAG,
@@ -79,6 +80,20 @@ export interface CanMessage {
   address: number;
   src: number;
   dataLength: number;
+}
+
+export interface CarStateMessage {
+  logMonoTime: bigint;
+  vEgo: number;
+  aEgo: number;
+  yawRate: number;
+  steeringAngleDeg: number;
+  steeringRateDeg: number;
+  steeringTorque: number;
+  steeringPressed: boolean;
+  standstill: boolean;
+  leftBlinker: boolean;
+  rightBlinker: boolean;
 }
 
 export interface FingerprintLogMessages {
@@ -183,6 +198,19 @@ const CAN_DATA_POINTER_FIELDS = {
 const CAN_DATA_FIELDS = {
   address: 0,
   src: 6,
+} as const;
+
+const CAR_STATE_DATA_FIELDS = {
+  vEgo: 0,
+  steeringAngleDeg: 4,
+  steeringTorque: 5,
+  steeringPressedBool: 66,
+  steeringRateDeg: 6,
+  aEgo: 7,
+  standstillBool: 67,
+  leftBlinkerBool: 69,
+  rightBlinkerBool: 70,
+  yawRate: 9,
 } as const;
 
 const ECU_NAMES: Record<number, string> = {
@@ -323,6 +351,22 @@ export function findFingerprintLogMessages(bytes: Uint8Array): FingerprintLogMes
   return result;
 }
 
+export function findCarStateMessages(bytes: Uint8Array): CarStateMessage[] {
+  const messages: CarStateMessage[] = [];
+  for (const segments of readMessages(bytes)) {
+    if (segments.length === 0) continue;
+    const root = readEventRoot(segments);
+    if (!root) continue;
+
+    const unionTag = getUint16(root, EVENT_UNION_TAG_BYTE_OFFSET);
+    if (unionTag !== CAR_STATE_UNION_TAG) continue;
+
+    const carState = readCarStateMessageFromRoot(root, segments);
+    if (carState) messages.push(carState);
+  }
+  return messages;
+}
+
 export function readLiveCalibrationMessage(segments: SegmentData[]): CalibrationMessage | null {
   const root = readEventRoot(segments);
   if (!root) return null;
@@ -428,6 +472,24 @@ function readCanMessagesFromRoot(root: StructRef & { segmentIndex: number }, seg
     src: getUint8ByIndex(can, CAN_DATA_FIELDS.src),
     dataLength: readDataField(can, CAN_DATA_POINTER_FIELDS.dat).length,
   }));
+}
+
+function readCarStateMessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): CarStateMessage | null {
+  const carState = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!carState) return null;
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    vEgo: getFloat32ByIndex(carState, CAR_STATE_DATA_FIELDS.vEgo),
+    aEgo: getFloat32ByIndex(carState, CAR_STATE_DATA_FIELDS.aEgo),
+    yawRate: getFloat32ByIndex(carState, CAR_STATE_DATA_FIELDS.yawRate),
+    steeringAngleDeg: getFloat32ByIndex(carState, CAR_STATE_DATA_FIELDS.steeringAngleDeg),
+    steeringRateDeg: getFloat32ByIndex(carState, CAR_STATE_DATA_FIELDS.steeringRateDeg),
+    steeringTorque: getFloat32ByIndex(carState, CAR_STATE_DATA_FIELDS.steeringTorque),
+    steeringPressed: getBoolByIndex(carState, CAR_STATE_DATA_FIELDS.steeringPressedBool),
+    standstill: getBoolByIndex(carState, CAR_STATE_DATA_FIELDS.standstillBool),
+    leftBlinker: getBoolByIndex(carState, CAR_STATE_DATA_FIELDS.leftBlinkerBool),
+    rightBlinker: getBoolByIndex(carState, CAR_STATE_DATA_FIELDS.rightBlinkerBool),
+  };
 }
 
 function readDeviceTypeMessage(segments: SegmentData[]): DeviceType | null {
@@ -609,6 +671,13 @@ function getUint32ByIndex(ref: StructRef, index: number): number {
   if (offset + 4 > ref.dataOffset + ref.dataWords * WORD_SIZE) return 0;
   const view = new DataView(ref.segment.bytes.buffer, ref.segment.bytes.byteOffset, ref.segment.bytes.byteLength);
   return view.getUint32(offset, true);
+}
+
+function getFloat32ByIndex(ref: StructRef, index: number): number {
+  const offset = ref.dataOffset + index * 4;
+  if (offset + 4 > ref.dataOffset + ref.dataWords * WORD_SIZE) return 0;
+  const view = new DataView(ref.segment.bytes.buffer, ref.segment.bytes.byteOffset, ref.segment.bytes.byteLength);
+  return view.getFloat32(offset, true);
 }
 
 function readUint64(bytes: Uint8Array, byteOffset: number): bigint {

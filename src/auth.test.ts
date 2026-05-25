@@ -91,6 +91,6 @@ describe("comma auth token storage", () => {
 
     expect(providers).toHaveLength(3);
     expect(providers[0].url).toContain("state=service%2Cnew-connect.connect-d5y.pages.dev");
-    expect(providers[0].url).not.toContain("op-fingerprint-reading-tool");
+    expect(providers[0].url).not.toContain("op-steering-center-tool");
   });
 });

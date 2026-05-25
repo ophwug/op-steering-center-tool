@@ -1,8 +1,9 @@
 {
-  "name": "op-fingerprint-reading-tool",
+  "name": "op-steering-center-tool",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@9.0.6",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build && node scripts/copy_404.mjs",

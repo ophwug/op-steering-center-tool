@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findDeviceType, findFingerprintLogMessages } from "./capnp";
+import { findCarStateMessages, findDeviceType, findFingerprintLogMessages } from "./capnp";
 
 describe("Cap'n Proto log parsing", () => {
   it("reads the stable initData deviceType field", () => {
@@ -36,6 +36,21 @@ describe("Cap'n Proto log parsing", () => {
     });
     expect(messages.onroadEvents).toMatchObject([{ name: 54, nameText: "carUnrecognized" }]);
     expect(messages.canMessages).toMatchObject([{ address: 0x5a0, src: 1, dataLength: 8 }]);
+  });
+
+  it("reads carState steering fields", () => {
+    expect(findCarStateMessages(carStateMessage())).toMatchObject([
+      {
+        vEgo: 18.5,
+        steeringAngleDeg: -1.25,
+        steeringRateDeg: 0.5,
+        steeringTorque: 12,
+        steeringPressed: false,
+        standstill: false,
+        leftBlinker: false,
+        rightBlinker: false,
+      },
+    ]);
   });
 });
 
@@ -108,6 +123,19 @@ function canMessage(): Uint8Array {
   builder.view.setUint32(dataOffset, 0x5a0, true);
   builder.view.setUint8(dataOffset + 6, 1);
   builder.writeDataPointer(pointerOffset, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+  return builder.finish();
+}
+
+function carStateMessage(): Uint8Array {
+  const builder = new SegmentBuilder(256);
+  const event = builder.initEvent(21);
+  const carState = builder.writeStructPointer(event.pointerOffset, 12, 2);
+  builder.view.setFloat32(carState.dataOffset, 18.5, true);
+  builder.view.setFloat32(carState.dataOffset + 4 * 4, -1.25, true);
+  builder.view.setFloat32(carState.dataOffset + 5 * 4, 12, true);
+  builder.view.setFloat32(carState.dataOffset + 6 * 4, 0.5, true);
+  builder.view.setFloat32(carState.dataOffset + 7 * 4, 0.1, true);
+  builder.view.setFloat32(carState.dataOffset + 9 * 4, 0.01, true);
   return builder.finish();
 }
 

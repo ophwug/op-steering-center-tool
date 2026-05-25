@@ -3,18 +3,24 @@ import { completeAuthCallback, isSignedIn, setAccessToken, signOut } from "./aut
 import {
   COMMA_JWT_PORTAL_URL,
   GITHUB_REPO_URL,
-  OPENPILOT_FINGERPRINTING_URL,
   OPENPILOT_MASTER_SOURCES,
-  SUNNYLINK_URL,
-  SUNNYPILOT_VEHICLE_SETTINGS_URL,
 } from "./constants";
 import { formatLogMonoTime } from "./format";
-import { scanRouteForFingerprintDebug, type FingerprintScanResult, type Recommendation } from "./scan";
+import {
+  scanRouteForSteeringCenterDiagnostic,
+  type SteeringCenterDiagnosticResult,
+  type SteeringSampleSummary,
+  type SteeringWindowFilters,
+} from "./scan";
 
 const DEMO_ROUTES = [
   {
     label: "mici / Ford Bronco Sport",
     url: "https://connect.comma.ai/5beb9b58bd12b691/0000010a--a51155e496",
+  },
+  {
+    label: "submitted steering issue",
+    url: "https://connect.comma.ai/5204c516142a0bd2/00000017--6da71e4c31/340/367",
   },
   {
     label: "tizi / Toyota Corolla TSS2",
@@ -30,7 +36,7 @@ app.innerHTML = `
     <header class="masthead">
       <div>
         <p class="eyebrow">openpilot route utility</p>
-        <h1>Fingerprint route debugger</h1>
+        <h1>Steering centering diagnostic</h1>
       </div>
     </header>
 
@@ -41,7 +47,7 @@ app.innerHTML = `
           placeholder="Paste Connect URL here, e.g. https://connect.comma.ai/<dongle>/<route>" />
         <button class="scan-button" type="submit">Scan route</button>
       </div>
-      <p class="form-hint">Reads uploaded qlogs first, falls back to rlogs, and builds a fingerprint evidence report from CarParams, firmware, startup events, and CAN messages.</p>
+      <p class="form-hint">Requires uploaded rlogs for full-rate carState, then estimates the median steeringAngleDeg during stable straight-driving windows.</p>
       <div class="demo-row">
         <select id="demo-route-select" aria-label="Demo route">
           ${DEMO_ROUTES.map((route) => `<option value="${escapeHtml(route.url)}">${escapeHtml(route.label)}</option>`).join("")}
@@ -52,7 +58,7 @@ app.innerHTML = `
 
     <section class="status-panel" id="status-panel" aria-live="polite">
       <div class="progress-track"><div id="progress-bar"></div></div>
-      <p id="status-text">Paste a public route to inspect fingerprint evidence.</p>
+      <p id="status-text">Paste a public route to estimate logged steering wheel center.</p>
     </section>
 
     <section id="result-panel" class="result-panel" hidden></section>
@@ -70,14 +76,14 @@ app.innerHTML = `
       </article>
       <article>
         <h2>Debug paths</h2>
-        <p>For stock openpilot, start with the <a href="${OPENPILOT_FINGERPRINTING_URL}" target="_blank" rel="noreferrer">fingerprinting guide</a> and nightly-dev. For SunnyPilot, use <a href="${SUNNYLINK_URL}" target="_blank" rel="noreferrer">SunnyLink</a> or the <a href="${SUNNYPILOT_VEHICLE_SETTINGS_URL}" target="_blank" rel="noreferrer">vehicle selector</a>. The report below is meant to package the route evidence cleanly for human debugging.</p>
+        <p>Use this as a route evidence report when a car appears to need steering wheel centering or steering sensor offset review. It filters out turns, low-speed driving, blinkers, standstill, and driver steering input before summarizing the remaining straight, steady windows.</p>
       </article>
     </section>
 
     <footer>
       Route file discovery follows comma Connect's public <a href="${OPENPILOT_MASTER_SOURCES.commaApi}" target="_blank" rel="noreferrer">route files API</a>.
-      Log fields come from <a href="${OPENPILOT_MASTER_SOURCES.logSchema}" target="_blank" rel="noreferrer">openpilot log.capnp</a>
-      and <a href="${OPENPILOT_MASTER_SOURCES.carSchema}" target="_blank" rel="noreferrer">opendbc car.capnp</a>.
+      Full-rate log fields come from <a href="${OPENPILOT_MASTER_SOURCES.logSchema}" target="_blank" rel="noreferrer">openpilot log.capnp</a>
+      and <a href="${OPENPILOT_MASTER_SOURCES.carSchema}" target="_blank" rel="noreferrer">opendbc car.capnp</a> carState.
       Source: <a href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">GitHub</a>.
     </footer>
   </section>
@@ -144,7 +150,7 @@ form.addEventListener("submit", async (event) => {
   clearResult();
 
   try {
-    const result = await scanRouteForFingerprintDebug(input.value, (progress) => {
+    const result = await scanRouteForSteeringCenterDiagnostic(input.value, (progress) => {
       statusText.textContent = progress.message;
       if (progress.total && progress.current) {
         progressBar.style.width = `${Math.max(5, (progress.current / progress.total) * 100)}%`;
@@ -216,18 +222,18 @@ async function completePendingAuth(): Promise<void> {
   }
 }
 
-function renderResult(result: FingerprintScanResult): void {
-  const car = result.carParams;
-  const recognized = Boolean(car?.carFingerprint);
-  const badgeClass = recognized && result.resultType !== "incomplete" ? "ok" : "warn";
-  const badgeText = result.resultType === "incomplete" ? "scan incomplete" : recognized ? "recognized" : "needs fingerprint help";
+function renderResult(result: SteeringCenterDiagnosticResult): void {
+  const hasEstimate = result.medianSteeringAngleDeg !== null;
+  const estimateText = hasEstimate ? `${formatDeg(result.medianSteeringAngleDeg ?? 0)} steeringAngleDeg` : "No stable straight window found";
+  const badgeClass = result.confidence === "high" || result.confidence === "medium" ? "ok" : "warn";
+  const badgeText = result.confidence === "none" ? "no estimate" : `${result.confidence} confidence`;
 
   resultPanel.hidden = false;
   resultPanel.innerHTML = `
     <div class="result-header">
       <div>
-        <p class="eyebrow">fingerprint evidence</p>
-        <h2>${recognized ? escapeHtml(car?.carFingerprint ?? "") : "No logged car fingerprint"}</h2>
+        <p class="eyebrow">steering center estimate</p>
+        <h2>${estimateText}</h2>
       </div>
       <span class="badge ${badgeClass}">${badgeText}</span>
     </div>
@@ -236,16 +242,18 @@ function renderResult(result: FingerprintScanResult): void {
       <div><dt>Segments</dt><dd>${result.scannedSegments} of ${result.totalSegments} ${logFileKind(result.logSource)} segment(s) decoded</dd></div>
       <div><dt>Device</dt><dd>${escapeHtml(result.routeInfo?.deviceType ?? result.initData?.deviceType ?? "unknown")}</dd></div>
       <div><dt>openpilot</dt><dd>${renderRouteVersion(result)}</dd></div>
+      <div><dt>carState messages</dt><dd>${result.totalCarStateMessages.toLocaleString()} decoded; ${result.qualifyingSampleCount.toLocaleString()} passed point filters</dd></div>
+      <div><dt>Stable windows</dt><dd>${result.stableWindows.length} window(s), ${formatDuration(result.stableDurationSec)} total</dd></div>
+      <div><dt>Spread</dt><dd>${result.medianAbsoluteDeviationDeg === null ? "n/a" : `${formatDeg(result.medianAbsoluteDeviationDeg)} median absolute deviation`}</dd></div>
     </dl>
     ${result.readFailures.length > 0 ? renderReadFailures(result) : ""}
-    ${renderRecommendations(result.recommendations)}
-    ${renderCarParams(result)}
-    ${renderEvents(result)}
-    ${renderCanEvidence(result)}
+    ${renderCaveats(result)}
+    ${renderStableWindows(result)}
+    ${renderFilters(result.filters)}
   `;
 }
 
-function renderRouteVersion(result: FingerprintScanResult): string {
+function renderRouteVersion(result: SteeringCenterDiagnosticResult): string {
   const routeInfo = result.routeInfo;
   const init = result.initData;
   const version = routeInfo?.version || init?.version || "unknown";
@@ -254,167 +262,105 @@ function renderRouteVersion(result: FingerprintScanResult): string {
   return [version, branch, commit ? commit.slice(0, 12) : ""].filter(Boolean).map(escapeHtml).join(" / ") || "unknown";
 }
 
-function renderRecommendations(recommendations: Recommendation[]): string {
+function renderCaveats(result: SteeringCenterDiagnosticResult): string {
   return `
     <section class="report-section">
-      <h3>Debugging options</h3>
-      <div class="recommendation-grid">
-        ${recommendations
-          .map(
-            (recommendation) => `
-              <article class="recommendation ${recommendation.kind}">
-                <h4>${escapeHtml(recommendation.title)}</h4>
-                <p>${escapeHtml(recommendation.body)}</p>
-                ${recommendation.links.length ? `<p class="link-list">${recommendation.links.map((link) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noreferrer">${escapeHtml(link.label)}</a>`).join(" ")}</p>` : ""}
-              </article>
-            `,
-          )
-          .join("")}
-      </div>
+      <h3>Caveats</h3>
+      <ul class="caveat-list">
+        ${result.caveats.map((caveat) => `<li>${escapeHtml(caveat)}</li>`).join("")}
+      </ul>
     </section>
   `;
 }
 
-function renderCarParams(result: FingerprintScanResult): string {
-  const car = result.carParams;
-  if (!car) {
-    return `
-      <section class="report-section">
-        <h3>CarParams</h3>
-        <p class="muted">No CarParams message was decoded. Use the CAN evidence and startup events below for manual fingerprint debugging.</p>
-      </section>
-    `;
-  }
-
+function renderStableWindows(result: SteeringCenterDiagnosticResult): string {
+  const rows = result.stableWindows.slice(0, 24);
   return `
     <section class="report-section">
-      <h3>CarParams</h3>
-      <dl class="result-list compact">
-        <div><dt>Brand</dt><dd>${escapeHtml(car.brand || "unknown")}</dd></div>
-        <div><dt>Fingerprint</dt><dd>${escapeHtml(car.carFingerprint || "none")}</dd></div>
-        <div><dt>Fingerprint source</dt><dd>${escapeHtml(car.fingerprintSourceName)} (${car.fingerprintSource})${car.fuzzyFingerprint ? ", fuzzy" : ""}</dd></div>
-        <div><dt>Mode flags</dt><dd>${renderFlagList([["dashcamOnly", car.dashcamOnly], ["passive", car.passive], ["notCar", car.notCar], ["openpilotLongitudinalControl", car.openpilotLongitudinalControl]])}</dd></div>
-        <div><dt>VIN</dt><dd>${car.carVin ? `<details><summary>${escapeHtml(car.carVin.redacted)}</summary><code>${escapeHtml(car.carVin.value)}</code></details>` : "n/a"}</dd></div>
-        <div><dt>Log mono time</dt><dd>${formatLogMonoTime(car.logMonoTime)}</dd></div>
-        <div><dt>Source segment</dt><dd>${car.segment}</dd></div>
-      </dl>
-      ${renderFirmwareList(car.carFw)}
-    </section>
-  `;
-}
-
-function renderFirmwareList(carFw: NonNullable<FingerprintScanResult["carParams"]>["carFw"]): string {
-  if (carFw.length === 0) return `<p class="muted section-note">No firmware entries were logged in CarParams.</p>`;
-  return `
-    <div class="firmware-list">
-      ${carFw
-        .map(
-          (fw) => `
-            <article class="firmware-card">
-              <div class="firmware-card-header">
-                <h4>${escapeHtml(fw.ecuName)} (${fw.ecu})</h4>
-                <span>${escapeHtml(fw.brand || "brand n/a")} · bus ${fw.bus}</span>
-              </div>
-              <dl class="firmware-meta">
-                <div><dt>Address</dt><dd>${formatAddress(fw.address)}</dd></div>
-                <div><dt>Sub address</dt><dd>${fw.subAddress ? `0x${fw.subAddress.toString(16)}` : "None"}</dd></div>
-                <div><dt>Response</dt><dd>${fw.responseAddress ? formatAddress(fw.responseAddress) : "n/a"}</dd></div>
-                <div><dt>Text</dt><dd>${escapeHtml(fw.fwVersionText || "n/a")}</dd></div>
-              </dl>
-              <div class="firmware-copy-grid">
-                <section>
-                  <h5>Python bytes</h5>
-                  ${renderCopyableCode(fw.fwVersionPython)}
-                </section>
-                <section>
-                  <h5>FW_VERSIONS snippet</h5>
-                  ${renderCopyableCode(fw.pythonSnippet, true)}
-                </section>
-              </div>
-            </article>
-          `,
-        )
-        .join("")}
-    </div>
-  `;
-}
-
-function renderCopyableCode(value: string, multiline = false): string {
-  const code = multiline ? `<pre><code>${escapeHtml(value)}</code></pre>` : `<code>${escapeHtml(value)}</code>`;
-  return `
-    <div class="copy-cell">
-      ${code}
-      <button class="copy-button" type="button" data-copy="${escapeHtml(value)}">Copy</button>
-    </div>
-  `;
-}
-
-function renderEvents(result: FingerprintScanResult): string {
-  const importantEvents = result.onroadEvents.filter((event) =>
-    ["carUnrecognized", "dashcamMode", "startupNoCar", "startupNoControl", "canBusMissing", "canError", "vehicleSensorsInvalid"].includes(event.nameText),
-  );
-  const events = importantEvents.length ? importantEvents : result.onroadEvents.slice(0, 16);
-  return `
-    <section class="report-section">
-      <h3>Startup and recognition events</h3>
-      ${
-        events.length
-          ? `<div class="event-list">${events.map((event) => `<span class="event-chip">${escapeHtml(event.nameText)} <small>seg ${event.segment}</small></span>`).join("")}</div>`
-          : `<p class="muted">No onroadEvents messages were decoded.</p>`
-      }
-    </section>
-  `;
-}
-
-function renderCanEvidence(result: FingerprintScanResult): string {
-  const rows = result.canEvidence.slice(0, 240);
-  return `
-    <section class="report-section">
-      <h3>CAN evidence</h3>
-      <p class="muted section-note">${result.canEvidence.length} unique source/address/length groups${result.canEvidence.length > rows.length ? `; showing first ${rows.length}` : ""}.</p>
+      <h3>Supporting stable windows</h3>
       ${
         rows.length
           ? `
             <div class="table-wrap">
-              <table>
+              <table class="steering-table">
                 <thead>
                   <tr>
-                    <th>Bus/src</th>
-                    <th>Address</th>
-                    <th>Length</th>
-                    <th>Count</th>
                     <th>Segments</th>
+                    <th>Duration</th>
+                    <th>Samples</th>
+                    <th>Median angle</th>
+                    <th>P10 / P90</th>
+                    <th>Median speed</th>
+                    <th>Range</th>
+                    <th>Sample log times</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${rows
-                    .map(
-                      (row) => `
-                        <tr>
-                          <td>${row.src}</td>
-                          <td>${formatAddress(row.address)}</td>
-                          <td>${row.dataLength}</td>
-                          <td>${row.count}</td>
-                          <td>${row.firstSegment === row.lastSegment ? row.firstSegment : `${row.firstSegment}-${row.lastSegment}`}</td>
-                        </tr>
-                      `,
-                    )
-                    .join("")}
+                  ${rows.map(renderWindowRow).join("")}
                 </tbody>
               </table>
             </div>
           `
-          : `<p class="muted">No CAN messages were decoded.</p>`
+          : `<p class="muted section-note">No window met the stable straight-driving filters.</p>`
       }
     </section>
   `;
 }
 
-function renderReadFailures(result: FingerprintScanResult): string {
+function renderWindowRow(window: SteeringCenterDiagnosticResult["stableWindows"][number]): string {
+  return `
+    <tr>
+      <td>${window.segmentStart === window.segmentEnd ? window.segmentStart : `${window.segmentStart}-${window.segmentEnd}`}</td>
+      <td>${formatDuration(window.durationSec)}</td>
+      <td>${window.sampleCount.toLocaleString()}</td>
+      <td>${formatDeg(window.medianSteeringAngleDeg)}</td>
+      <td>${formatDeg(window.p10SteeringAngleDeg)} / ${formatDeg(window.p90SteeringAngleDeg)}</td>
+      <td>${formatSpeed(window.medianSpeedMps)}</td>
+      <td>${formatDeg(window.maxAngleRangeDeg)}</td>
+      <td>${renderSupportingSamples(window.supportingSamples)}</td>
+    </tr>
+  `;
+}
+
+function renderSupportingSamples(samples: SteeringSampleSummary[]): string {
+  return samples
+    .map(
+      (sample) =>
+        `<span class="sample-chip" title="${escapeHtml(`${formatDeg(sample.steeringAngleDeg)}, ${formatSpeed(sample.vEgo)}, rate ${formatDeg(sample.steeringRateDeg)}/s`)}">${formatLogMonoTime(sample.logMonoTime)}</span>`,
+    )
+    .join("");
+}
+
+function renderFilters(filters: SteeringWindowFilters): string {
+  const filterRows = [
+    ["Max segments checked", String(filters.maxSegmentsToScan)],
+    ["Min speed", formatSpeed(filters.minSpeedMps)],
+    ["Max absolute steering angle", formatDeg(filters.maxAbsSteeringAngleDeg)],
+    ["Max absolute steering rate", `${formatDeg(filters.maxAbsSteeringRateDeg)}/s`],
+    ["Max sample gap", formatDuration(filters.maxSampleGapSec)],
+    ["Window duration", `${formatDuration(filters.minWindowDurationSec)}-${formatDuration(filters.maxWindowDurationSec)}`],
+    ["Min window samples", String(filters.minWindowSamples)],
+    ["Max angle range within window", formatDeg(filters.maxWindowAngleRangeDeg)],
+    [
+      "High confidence target",
+      `${filters.minHighConfidenceWindows} windows, ${formatDuration(filters.minHighConfidenceDurationSec)}, ${filters.minHighConfidenceSamples} samples`,
+    ],
+  ];
+  return `
+    <section class="report-section">
+      <h3>Filters used</h3>
+      <dl class="result-list compact">
+        ${filterRows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
+      </dl>
+    </section>
+  `;
+}
+
+function renderReadFailures(result: SteeringCenterDiagnosticResult): string {
   return `
     <section class="scan-warning">
       <h3>Unreadable ${logFileKind(result.logSource)} segment(s)</h3>
-      <p class="muted">These segments could not be checked, so the evidence report is incomplete.</p>
+      <p class="muted">These segments could not be checked, so the estimate may be incomplete.</p>
       <ul>
         ${result.readFailures.map((failure) => `<li>Segment ${failure.segment}: ${escapeHtml(failure.message)}</li>`).join("")}
       </ul>
@@ -422,17 +368,20 @@ function renderReadFailures(result: FingerprintScanResult): string {
   `;
 }
 
-function renderFlagList(flags: Array<[string, boolean]>): string {
-  const enabled = flags.filter(([, value]) => value).map(([label]) => label);
-  return enabled.length ? enabled.map(escapeHtml).join(", ") : "none";
-}
-
-function logFileKind(source: FingerprintScanResult["logSource"]): "qlog" | "rlog" {
+function logFileKind(source: SteeringCenterDiagnosticResult["logSource"]): "qlog" | "rlog" {
   return source === "qlogs" ? "qlog" : "rlog";
 }
 
-function formatAddress(address: number): string {
-  return `0x${address.toString(16).toUpperCase()}`;
+function formatDeg(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}°`;
+}
+
+function formatDuration(seconds: number): string {
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+}
+
+function formatSpeed(mps: number): string {
+  return `${mps.toFixed(1)} m/s (${(mps * 2.236936).toFixed(1)} mph)`;
 }
 
 function escapeHtml(value: string): string {

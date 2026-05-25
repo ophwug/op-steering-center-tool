@@ -473,6 +473,10 @@ table {
   font-size: 0.9rem;
 }
 
+table.steering-table {
+  min-width: 980px;
+}
+
 th,
 td {
   padding: 10px 12px;
@@ -536,6 +540,27 @@ td code {
 .event-chip small {
   color: #6b7c78;
   font-weight: 700;
+}
+
+.caveat-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: #3f5550;
+}
+
+.sample-chip {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  margin: 2px 4px 2px 0;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: #e7efe9;
+  color: #244540;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .qcamera-preview {
@@ -891,6 +916,15 @@ footer {
   }
 
   .event-chip {
+    background: #17241f;
+    color: #d9f8ee;
+  }
+
+  .caveat-list {
+    color: #cbd5d1;
+  }
+
+  .sample-chip {
     background: #17241f;
     color: #d9f8ee;
   }

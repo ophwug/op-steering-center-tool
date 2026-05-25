@@ -93,6 +93,10 @@ export function orderedLogUrls(files: RouteFiles): string[] {
   return sortBySegment(files.logs ?? []);
 }
 
+export function orderedRlogUrls(files: RouteFiles): string[] {
+  return sortBySegment(files.logs ?? []);
+}
+
 export function orderedQcameraUrls(files: RouteFiles): string[] {
   return sortBySegment(files.qcameras ?? []);
 }
@@ -102,6 +106,7 @@ export function logSourceLabel(files: RouteFiles): "qlogs" | "rlogs" | "none" {
   if ((files.logs ?? []).length > 0) return "rlogs";
   return "none";
 }
+
 
 export function segmentFromUrl(url: string): number {
   const match = url.match(/\/(\d+)\/(?:qlog|rlog|qcamera)\.(?:bz2|zst|ts)(?:\?|$)/);
