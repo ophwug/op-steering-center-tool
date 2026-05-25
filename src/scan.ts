@@ -751,15 +751,19 @@ function selectSteeringRlogUrls(
 
   const urlsBySegment = new Map(rlogUrls.map((url) => [segmentFromUrl(url), url]));
   const selected = new Set<string>();
+  const selectedUrls: string[] = [];
   for (const candidate of candidateSegments) {
     for (const segment of [candidate.segment - 1, candidate.segment, candidate.segment + 1]) {
       const url = urlsBySegment.get(segment);
-      if (url) selected.add(url);
+      if (url && !selected.has(url)) {
+        selected.add(url);
+        selectedUrls.push(url);
+      }
       if (selected.size >= filters.maxSegmentsToScan) break;
     }
     if (selected.size >= filters.maxSegmentsToScan) break;
   }
-  return [...selected].sort((a, b) => segmentFromUrl(a) - segmentFromUrl(b));
+  return selectedUrls;
 }
 
 async function fetchLog(logUrl: string): Promise<Response> {
