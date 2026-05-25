@@ -249,6 +249,7 @@ function renderResult(result: SteeringCenterDiagnosticResult): void {
     ${result.readFailures.length > 0 ? renderReadFailures(result) : ""}
     ${renderCaveats(result)}
     ${renderStableWindows(result)}
+    ${renderCandidateSegments(result)}
     ${renderFilters(result.filters)}
   `;
 }
@@ -290,8 +291,9 @@ function renderStableWindows(result: SteeringCenterDiagnosticResult): string {
                     <th>Samples</th>
                     <th>Median angle</th>
                     <th>P10 / P90</th>
+                    <th>MAD</th>
                     <th>Median speed</th>
-                    <th>Range</th>
+                    <th>Max range</th>
                     <th>Sample log times</th>
                   </tr>
                 </thead>
@@ -315,6 +317,7 @@ function renderWindowRow(window: SteeringCenterDiagnosticResult["stableWindows"]
       <td>${window.sampleCount.toLocaleString()}</td>
       <td>${formatDeg(window.medianSteeringAngleDeg)}</td>
       <td>${formatDeg(window.p10SteeringAngleDeg)} / ${formatDeg(window.p90SteeringAngleDeg)}</td>
+      <td>${formatDeg(window.medianAbsoluteDeviationDeg)}</td>
       <td>${formatSpeed(window.medianSpeedMps)}</td>
       <td>${formatDeg(window.maxAngleRangeDeg)}</td>
       <td>${renderSupportingSamples(window.supportingSamples)}</td>
@@ -331,9 +334,57 @@ function renderSupportingSamples(samples: SteeringSampleSummary[]): string {
     .join("");
 }
 
+function renderCandidateSegments(result: SteeringCenterDiagnosticResult): string {
+  const rows = result.candidateSegments.slice(0, 16);
+  return `
+    <section class="report-section">
+      <h3>qlog candidate segments</h3>
+      <p class="muted section-note">qlogs are used only to choose promising rlog segments; the estimate still comes from full-rate rlogs.</p>
+      ${
+        rows.length
+          ? `
+            <div class="table-wrap">
+              <table class="candidate-table">
+                <thead>
+                  <tr>
+                    <th>Segment</th>
+                    <th>qlog samples</th>
+                    <th>Point-filter pass</th>
+                    <th>Median speed</th>
+                    <th>P90 abs angle</th>
+                    <th>P90 abs rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${row.segment}</td>
+                          <td>${row.sampleCount.toLocaleString()}</td>
+                          <td>${row.qualifyingSampleCount.toLocaleString()}</td>
+                          <td>${row.medianSpeedMps === null ? "n/a" : formatSpeed(row.medianSpeedMps)}</td>
+                          <td>${row.p90AbsSteeringAngleDeg === null ? "n/a" : formatDeg(row.p90AbsSteeringAngleDeg)}</td>
+                          <td>${row.p90AbsSteeringRateDeg === null ? "n/a" : `${formatDeg(row.p90AbsSteeringRateDeg)}/s`}</td>
+                        </tr>
+                      `,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+          `
+          : `<p class="muted section-note">No qlog candidate pass was available, so the scan checked rlogs in route order.</p>`
+      }
+    </section>
+  `;
+}
+
 function renderFilters(filters: SteeringWindowFilters): string {
   const filterRows = [
     ["Max segments checked", String(filters.maxSegmentsToScan)],
+    ["Max qlog candidate segments checked", String(filters.maxQlogSegmentsToScan)],
+    ["Top qlog candidates used", String(filters.candidateSegmentsToScan)],
     ["Min speed", formatSpeed(filters.minSpeedMps)],
     ["Max absolute steering angle", formatDeg(filters.maxAbsSteeringAngleDeg)],
     ["Max absolute steering rate", `${formatDeg(filters.maxAbsSteeringRateDeg)}/s`],

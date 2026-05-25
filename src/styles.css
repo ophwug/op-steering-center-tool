@@ -474,7 +474,11 @@ table {
 }
 
 table.steering-table {
-  min-width: 980px;
+  min-width: 1080px;
+}
+
+table.candidate-table {
+  min-width: 860px;
 }
 
 th,

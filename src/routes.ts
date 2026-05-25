@@ -93,6 +93,10 @@ export function orderedLogUrls(files: RouteFiles): string[] {
   return sortBySegment(files.logs ?? []);
 }
 
+export function orderedQlogUrls(files: RouteFiles): string[] {
+  return sortBySegment(files.qlogs ?? []);
+}
+
 export function orderedRlogUrls(files: RouteFiles): string[] {
   return sortBySegment(files.logs ?? []);
 }

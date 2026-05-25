@@ -29,6 +29,7 @@ import {
   logSourceLabel,
   orderedLogUrls,
   orderedQcameraUrls,
+  orderedQlogUrls,
   orderedRlogUrls,
   parseRouteInput,
   segmentFromUrl,
@@ -156,6 +157,7 @@ interface RouteLogContext {
   routeName: string;
   routeInfo: RouteInfo | null;
   logUrls: string[];
+  qlogUrls: string[];
   qcameraUrls: string[];
   source: "qlogs" | "rlogs";
 }
@@ -179,6 +181,8 @@ export type SteeringConfidence = "high" | "medium" | "low" | "none";
 
 export interface SteeringWindowFilters {
   maxSegmentsToScan: number;
+  maxQlogSegmentsToScan: number;
+  candidateSegmentsToScan: number;
   minSpeedMps: number;
   maxAbsSteeringAngleDeg: number;
   maxAbsSteeringRateDeg: number;
@@ -216,9 +220,19 @@ export interface SteeringWindowSummary {
   medianSteeringAngleDeg: number;
   p10SteeringAngleDeg: number;
   p90SteeringAngleDeg: number;
+  medianAbsoluteDeviationDeg: number;
   medianSpeedMps: number;
   maxAngleRangeDeg: number;
   supportingSamples: SteeringSampleSummary[];
+}
+
+export interface SteeringCandidateSegmentSummary {
+  segment: number;
+  sampleCount: number;
+  qualifyingSampleCount: number;
+  medianSpeedMps: number | null;
+  p90AbsSteeringRateDeg: number | null;
+  p90AbsSteeringAngleDeg: number | null;
 }
 
 export interface SteeringCenterDiagnosticResult {
@@ -237,6 +251,7 @@ export interface SteeringCenterDiagnosticResult {
   medianSteeringAngleDeg: number | null;
   medianAbsoluteDeviationDeg: number | null;
   filters: SteeringWindowFilters;
+  candidateSegments: SteeringCandidateSegmentSummary[];
   stableWindows: SteeringWindowSummary[];
   caveats: string[];
 }
@@ -250,6 +265,8 @@ interface SteeringSample extends SteeringSampleSummary {
 
 const DEFAULT_STEERING_FILTERS: SteeringWindowFilters = {
   maxSegmentsToScan: 20,
+  maxQlogSegmentsToScan: 120,
+  candidateSegmentsToScan: 8,
   minSpeedMps: 8,
   maxAbsSteeringAngleDeg: 15,
   maxAbsSteeringRateDeg: 2,
@@ -475,7 +492,8 @@ export async function scanRouteForSteeringCenterDiagnostic(
   let initData: InitDataMessage | null = null;
   let decodedSegments = 0;
   let totalCarStateMessages = 0;
-  const scannedLogUrls = context.logUrls.slice(0, filters.maxSegmentsToScan);
+  const candidateSegments = await scanQlogSteeringCandidates(context, filters, onProgress);
+  const scannedLogUrls = selectSteeringRlogUrls(context.logUrls, candidateSegments, filters);
 
   for (let index = 0; index < scannedLogUrls.length; index += 1) {
     const logUrl = scannedLogUrls[index];
@@ -500,7 +518,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
           phase: "done",
           message: `Found ${interimWindows.length} stable straight-driving windows after ${decodedSegments} ${logFileKind(context.source)} segment(s).`,
         });
-        return buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters);
+        return buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters, candidateSegments);
       }
     } catch (error) {
       const failure = { logUrl, segment, message: readableLogError(error) };
@@ -514,7 +532,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
     }
   }
 
-  const result = buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters);
+  const result = buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters, candidateSegments);
   onProgress({
     phase: "done",
     message:
@@ -535,6 +553,7 @@ async function loadRouteLogContext(
 
   const [routeInfo, files] = await Promise.all([fetchRouteInfo(parsed.routeName), fetchRouteFiles(parsed.routeName)]);
   const logUrls = mode === "rlogs-only" ? orderedRlogUrls(files) : orderedLogUrls(files);
+  const qlogUrls = orderedQlogUrls(files);
   const qcameraUrls = orderedQcameraUrls(files);
   if (logUrls.length === 0) {
     if (mode === "rlogs-only" && (files.qlogs ?? []).length > 0) {
@@ -550,7 +569,7 @@ async function loadRouteLogContext(
     onProgress({ phase: "metadata", message: "No qlogs found; falling back to rlogs." });
   }
 
-  return { routeName: parsed.routeName, routeInfo, logUrls, qcameraUrls, source };
+  return { routeName: parsed.routeName, routeInfo, logUrls, qlogUrls, qcameraUrls, source };
 }
 
 async function downloadLogSegmentScan(
@@ -642,6 +661,74 @@ async function downloadSteeringSegmentScan(
   };
 }
 
+async function scanQlogSteeringCandidates(
+  context: RouteLogContext,
+  filters: SteeringWindowFilters,
+  onProgress: (progress: ScanProgress) => void,
+): Promise<SteeringCandidateSegmentSummary[]> {
+  const candidateQlogs = context.qlogUrls.slice(0, filters.maxQlogSegmentsToScan);
+  if (candidateQlogs.length === 0) return [];
+
+  const summaries: SteeringCandidateSegmentSummary[] = [];
+  for (let index = 0; index < candidateQlogs.length; index += 1) {
+    const logUrl = candidateQlogs[index];
+    const segment = segmentFromUrl(logUrl);
+    try {
+      const segmentScan = await downloadSteeringSegmentScan(logUrl, segment, index, candidateQlogs.length, "qlogs", onProgress);
+      const samples = segmentScan.carStates.map((message) => summarizeSteeringSample(message, logUrl, segment));
+      const summary = summarizeCandidateSegment(segment, samples, filters);
+      if (summary.sampleCount > 0) summaries.push(summary);
+      context.routeInfo = routeInfoWithDeviceType(context.routeInfo, context.routeName, segmentScan.deviceType);
+    } catch {
+      // qlogs only guide rlog selection; unreadable qlog candidates should not block the diagnostic.
+    }
+  }
+
+  return summaries
+    .sort(
+      (a, b) =>
+        b.qualifyingSampleCount - a.qualifyingSampleCount ||
+        (b.medianSpeedMps ?? 0) - (a.medianSpeedMps ?? 0) ||
+        (a.p90AbsSteeringRateDeg ?? Infinity) - (b.p90AbsSteeringRateDeg ?? Infinity),
+    )
+    .slice(0, filters.candidateSegmentsToScan);
+}
+
+function summarizeCandidateSegment(segment: number, samples: SteeringSample[], filters: SteeringWindowFilters): SteeringCandidateSegmentSummary {
+  const movingSamples = samples.filter((sample) => Number.isFinite(sample.vEgo) && sample.vEgo >= filters.minSpeedMps && !sample.standstill);
+  const qualifyingSamples = samples.filter((sample) => isQualifyingSteeringSample(sample, filters));
+  return {
+    segment,
+    sampleCount: samples.length,
+    qualifyingSampleCount: qualifyingSamples.length,
+    medianSpeedMps: median(movingSamples.map((sample) => sample.vEgo)),
+    p90AbsSteeringRateDeg: percentile(movingSamples.map((sample) => Math.abs(sample.steeringRateDeg)), 0.9),
+    p90AbsSteeringAngleDeg: percentile(movingSamples.map((sample) => Math.abs(sample.steeringAngleDeg)), 0.9),
+  };
+}
+
+function selectSteeringRlogUrls(
+  rlogUrls: string[],
+  candidateSegments: SteeringCandidateSegmentSummary[],
+  filters: SteeringWindowFilters,
+): string[] {
+  if (candidateSegments.length === 0 || candidateSegments.every((candidate) => candidate.qualifyingSampleCount === 0)) {
+    return rlogUrls.slice(0, filters.maxSegmentsToScan);
+  }
+
+  const urlsBySegment = new Map(rlogUrls.map((url) => [segmentFromUrl(url), url]));
+  const selected = new Set<string>();
+  for (const candidate of candidateSegments) {
+    for (const segment of [candidate.segment - 1, candidate.segment, candidate.segment + 1]) {
+      const url = urlsBySegment.get(segment);
+      if (url) selected.add(url);
+      if (selected.size >= filters.maxSegmentsToScan) break;
+    }
+    if (selected.size >= filters.maxSegmentsToScan) break;
+  }
+  return [...selected].sort((a, b) => segmentFromUrl(a) - segmentFromUrl(b));
+}
+
 async function fetchLog(logUrl: string): Promise<Response> {
   const response = await fetch(logUrl);
   if (!response.ok) {
@@ -714,6 +801,7 @@ function buildSteeringCenterResult(
   totalCarStateMessages: number,
   samples: SteeringSample[],
   filters: SteeringWindowFilters,
+  candidateSegments: SteeringCandidateSegmentSummary[],
 ): SteeringCenterDiagnosticResult {
   const stableWindows = findStableSteeringWindows(samples, filters);
   const stableSamples = samplesInsideWindows(samples, stableWindows);
@@ -750,6 +838,7 @@ function buildSteeringCenterResult(
     medianSteeringAngleDeg,
     medianAbsoluteDeviationDeg,
     filters,
+    candidateSegments,
     stableWindows,
     caveats,
   };
@@ -811,6 +900,7 @@ function summarizeSteeringWindow(samples: SteeringSample[]): SteeringWindowSumma
   const speeds = samples.map((sample) => sample.vEgo);
   const first = samples[0];
   const last = samples.at(-1) ?? first;
+  const windowMedianAngle = median(angles) ?? 0;
   const supportingSamples = [first, samples[Math.floor(samples.length / 2)], last]
     .filter((sample, index, array) => array.findIndex((other) => other.logMonoTime === sample.logMonoTime) === index)
     .map(toPublicSteeringSample);
@@ -822,9 +912,10 @@ function summarizeSteeringWindow(samples: SteeringSample[]): SteeringWindowSumma
     endLogMonoTime: last.logMonoTime,
     durationSec: secondsBetween(first.logMonoTime, last.logMonoTime),
     sampleCount: samples.length,
-    medianSteeringAngleDeg: median(angles) ?? 0,
+    medianSteeringAngleDeg: windowMedianAngle,
     p10SteeringAngleDeg: percentile(angles, 0.1) ?? 0,
     p90SteeringAngleDeg: percentile(angles, 0.9) ?? 0,
+    medianAbsoluteDeviationDeg: median(angles.map((angle) => Math.abs(angle - windowMedianAngle))) ?? 0,
     medianSpeedMps: median(speeds) ?? 0,
     maxAngleRangeDeg: angleRange(samples),
     supportingSamples,
@@ -863,20 +954,6 @@ function samplesInsideWindows(samples: SteeringSample[], windows: SteeringWindow
   return samples.filter((sample) =>
     windows.some((window) => sample.logMonoTime >= window.startLogMonoTime && sample.logMonoTime <= window.endLogMonoTime),
   );
-}
-
-function stableSamplesFromWindows(windows: SteeringWindowSummary[]): SteeringSampleSummary[] {
-  const seen = new Set<string>();
-  const samples: SteeringSampleSummary[] = [];
-  for (const window of windows) {
-    for (const sample of window.supportingSamples) {
-      const key = `${sample.segment}:${sample.logMonoTime}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      samples.push(sample);
-    }
-  }
-  return samples;
 }
 
 function steeringConfidence(

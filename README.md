@@ -7,6 +7,8 @@ It fetches comma's public route file list, requires uploaded rlogs for full-rate
 `carState`, supports `.zst` and `.bz2`, decompresses in the browser, and decodes
 just enough Cap'n Proto to summarize:
 
+- qlog candidate segments, when available, to cheaply pick promising rlog
+  segments by speed and steady steering
 - `carState` speed, steering angle, steering rate, steering torque, steering
   pressed, standstill, blinker, and yaw-rate fields
 - stable straight-driving windows that pass speed, steering-rate, blinker,
