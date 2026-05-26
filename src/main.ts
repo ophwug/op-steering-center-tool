@@ -47,7 +47,7 @@ app.innerHTML = `
           placeholder="Paste Connect URL here, e.g. https://connect.comma.ai/<dongle>/<route>" />
         <button class="scan-button" type="submit">Scan route</button>
       </div>
-      <p class="form-hint">Requires uploaded rlogs for full-rate carState, then estimates the median steeringAngleDeg during stable straight-driving windows.</p>
+      <p class="form-hint">Requires uploaded rlogs, ranks candidates with qlogs when available, then estimates median steeringAngleDeg from speed-aware straight-driving windows.</p>
       <div class="demo-row">
         <select id="demo-route-select" aria-label="Demo route">
           ${DEMO_ROUTES.map((route) => `<option value="${escapeHtml(route.url)}">${escapeHtml(route.label)}</option>`).join("")}
@@ -76,14 +76,14 @@ app.innerHTML = `
       </article>
       <article>
         <h2>Debug paths</h2>
-        <p>Use this as a route evidence report when a car appears to need steering wheel centering or steering sensor offset review. It filters out turns, low-speed driving, blinkers, standstill, and driver steering input before summarizing the remaining straight, steady windows.</p>
+        <p>Use this as a route evidence report when a car appears to need steering wheel centering or steering sensor offset review. It scores straightness with carState, yaw, pose, location, controls, and planner curvature signals where the rlog provides them.</p>
       </article>
     </section>
 
     <footer>
       Route file discovery follows comma Connect's public <a href="${OPENPILOT_MASTER_SOURCES.commaApi}" target="_blank" rel="noreferrer">route files API</a>.
       Full-rate log fields come from <a href="${OPENPILOT_MASTER_SOURCES.logSchema}" target="_blank" rel="noreferrer">openpilot log.capnp</a>
-      and <a href="${OPENPILOT_MASTER_SOURCES.carSchema}" target="_blank" rel="noreferrer">opendbc car.capnp</a> carState.
+      and <a href="${OPENPILOT_MASTER_SOURCES.carSchema}" target="_blank" rel="noreferrer">opendbc car.capnp</a>.
       Source: <a href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">GitHub</a>.
     </footer>
   </section>
@@ -242,7 +242,9 @@ function renderResult(result: SteeringCenterDiagnosticResult): void {
       <div><dt>Segments</dt><dd>${result.scannedSegments} of ${result.totalSegments} ${logFileKind(result.logSource)} segment(s) decoded</dd></div>
       <div><dt>Device</dt><dd>${escapeHtml(result.routeInfo?.deviceType ?? result.initData?.deviceType ?? "unknown")}</dd></div>
       <div><dt>openpilot</dt><dd>${renderRouteVersion(result)}</dd></div>
+      <div><dt>Classification</dt><dd>${renderClassification(result)}</dd></div>
       <div><dt>carState messages</dt><dd>${result.totalCarStateMessages.toLocaleString()} decoded; ${result.qualifyingSampleCount.toLocaleString()} passed point filters</dd></div>
+      <div><dt>Context signals</dt><dd>${renderSignalAvailability(result)}</dd></div>
       <div><dt>Stable windows</dt><dd>${result.stableWindows.length} window(s), ${formatDuration(result.stableDurationSec)} total</dd></div>
       <div><dt>Spread</dt><dd>${result.medianAbsoluteDeviationDeg === null ? "n/a" : `${formatDeg(result.medianAbsoluteDeviationDeg)} median absolute deviation`}</dd></div>
     </dl>
@@ -263,11 +265,18 @@ function renderRouteVersion(result: SteeringCenterDiagnosticResult): string {
   return [version, branch, commit ? commit.slice(0, 12) : ""].filter(Boolean).map(escapeHtml).join(" / ") || "unknown";
 }
 
+function renderClassification(result: SteeringCenterDiagnosticResult): string {
+  const classification = result.classification;
+  const spread = classification.windowMedianSpreadDeg === null ? "spread n/a" : `${formatDeg(classification.windowMedianSpreadDeg)} window spread`;
+  return `${escapeHtml(classification.label)} (${formatPercent(classification.signConsistencyPct)} sign consistency, ${spread})`;
+}
+
 function renderCaveats(result: SteeringCenterDiagnosticResult): string {
   return `
     <section class="report-section">
       <h3>Caveats</h3>
       <ul class="caveat-list">
+        <li>${escapeHtml(result.classification.explanation)}</li>
         ${result.caveats.map((caveat) => `<li>${escapeHtml(caveat)}</li>`).join("")}
       </ul>
     </section>
@@ -293,6 +302,8 @@ function renderStableWindows(result: SteeringCenterDiagnosticResult): string {
                     <th>P10 / P90</th>
                     <th>MAD</th>
                     <th>Median speed</th>
+                    <th>Straight score</th>
+                    <th>Yaw / curvature</th>
                     <th>Max range</th>
                     <th>Sample log times</th>
                   </tr>
@@ -319,6 +330,8 @@ function renderWindowRow(window: SteeringCenterDiagnosticResult["stableWindows"]
       <td>${formatDeg(window.p10SteeringAngleDeg)} / ${formatDeg(window.p90SteeringAngleDeg)}</td>
       <td>${formatDeg(window.medianAbsoluteDeviationDeg)}</td>
       <td>${formatSpeed(window.medianSpeedMps)}</td>
+      <td>${formatPercent(window.medianStraightnessScore)} / ${formatPercent(window.contextSignalCoveragePct)} context</td>
+      <td>${formatYawCurvature(window.medianContextYawRateRadPerSec, window.medianContextCurvature)}</td>
       <td>${formatDeg(window.maxAngleRangeDeg)}</td>
       <td>${renderSupportingSamples(window.supportingSamples)}</td>
     </tr>
@@ -329,9 +342,21 @@ function renderSupportingSamples(samples: SteeringSampleSummary[]): string {
   return samples
     .map(
       (sample) =>
-        `<span class="sample-chip" title="${escapeHtml(`${formatDeg(sample.steeringAngleDeg)}, ${formatSpeed(sample.vEgo)}, rate ${formatDeg(sample.steeringRateDeg)}/s`)}">${formatLogMonoTime(sample.logMonoTime)}</span>`,
+        `<span class="sample-chip" title="${escapeHtml(`${formatDeg(sample.steeringAngleDeg)}, ${formatSpeed(sample.vEgo)}, score ${formatPercent(sample.straightnessScore)}, rate ${formatDeg(sample.steeringRateDeg)}/s`)}">${formatLogMonoTime(sample.logMonoTime)}</span>`,
     )
     .join("");
+}
+
+function renderSignalAvailability(result: SteeringCenterDiagnosticResult): string {
+  const availability = result.signalAvailability;
+  const contextCoverage = result.totalCarStateMessages === 0 ? 0 : availability.samplesWithAnyContext / result.totalCarStateMessages;
+  const contextMessages =
+    availability.controlsStateMessages +
+    availability.lateralPlanMessages +
+    availability.liveLocationKalmanMessages +
+    availability.livePoseMessages;
+  if (contextMessages === 0) return "carState only";
+  return `${formatPercent(contextCoverage)} samples aligned; controls ${availability.controlsStateMessages.toLocaleString()}, planner ${availability.lateralPlanMessages.toLocaleString()}, location ${availability.liveLocationKalmanMessages.toLocaleString()}, pose ${availability.livePoseMessages.toLocaleString()}`;
 }
 
 function renderCandidateSegments(result: SteeringCenterDiagnosticResult): string {
@@ -390,6 +415,15 @@ function renderFilters(filters: SteeringWindowFilters): string {
     ["Min speed", formatSpeed(filters.minSpeedMps)],
     ["Max absolute steering angle", formatDeg(filters.maxAbsSteeringAngleDeg)],
     ["Max absolute steering rate", `${formatDeg(filters.maxAbsSteeringRateDeg)}/s`],
+    [
+      "Speed-aware yaw rate",
+      `${formatRadPerSec(filters.maxAbsYawRateRadPerSecAtMinSpeed)} at ${formatSpeed(filters.minSpeedMps)} to ${formatRadPerSec(filters.maxAbsYawRateRadPerSecAtHighSpeed)} at ${formatSpeed(filters.highSpeedMps)}`,
+    ],
+    [
+      "Speed-aware curvature",
+      `${formatCurvature(filters.maxAbsCurvatureAtMinSpeed)} at ${formatSpeed(filters.minSpeedMps)} to ${formatCurvature(filters.maxAbsCurvatureAtHighSpeed)} at ${formatSpeed(filters.highSpeedMps)}`,
+    ],
+    ["Min straightness score", formatPercent(filters.minStraightnessScore)],
     ["Max sample gap", formatDuration(filters.maxSampleGapSec)],
     ["Window duration", `${formatDuration(filters.minWindowDurationSec)}-${formatDuration(filters.maxWindowDurationSec)}`],
     ["Min window samples", String(filters.minWindowSamples)],
@@ -435,6 +469,24 @@ function formatDuration(seconds: number): string {
 
 function formatSpeed(mps: number): string {
   return `${mps.toFixed(1)} m/s (${(mps * 2.236936).toFixed(1)} mph)`;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatRadPerSec(value: number): string {
+  return `${value.toFixed(3)} rad/s`;
+}
+
+function formatCurvature(value: number): string {
+  return `${value.toFixed(4)} 1/m`;
+}
+
+function formatYawCurvature(yawRate: number | null, curvature: number | null): string {
+  const yaw = yawRate === null ? "yaw n/a" : `yaw ${formatRadPerSec(yawRate)}`;
+  const curve = curvature === null ? "curve n/a" : `curve ${formatCurvature(curvature)}`;
+  return `${yaw}; ${curve}`;
 }
 
 function escapeHtml(value: string): string {

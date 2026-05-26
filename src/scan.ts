@@ -3,13 +3,19 @@ import {
   findCalibrationMessages,
   findDeviceType,
   findFingerprintLogMessages,
+  findSteeringContextMessages,
   type CalibrationMessage,
   type CarParamsMessage,
   type CarStateMessage,
+  type ControlsStateMessage,
   type DeviceType,
   type FingerprintLogMessages,
   type InitDataMessage,
+  type LateralPlanMessage,
+  type LiveLocationKalmanMessage,
+  type LivePoseMessage,
   type OnroadEventMessage,
+  type SteeringContextMessages,
 } from "./capnp";
 import {
   HARDCODED_FP_BRANCH_INDEX_URL,
@@ -175,6 +181,7 @@ interface SteeringSegmentScan {
   initData: InitDataMessage | null;
   deviceType: DeviceType | null;
   carStates: CarStateMessage[];
+  context: SteeringContextMessages;
 }
 
 interface SteeringSegmentWork {
@@ -188,6 +195,7 @@ type SteeringSegmentWorkResult =
   | { ok: false; work: SteeringSegmentWork; error: unknown };
 
 export type SteeringConfidence = "high" | "medium" | "low" | "none";
+export type SteeringDiagnosticClassificationKind = "likely-normal" | "bias-candidate" | "route-sensitive" | "inconclusive";
 
 export interface SteeringWindowFilters {
   maxSegmentsToScan: number;
@@ -198,6 +206,12 @@ export interface SteeringWindowFilters {
   minSpeedMps: number;
   maxAbsSteeringAngleDeg: number;
   maxAbsSteeringRateDeg: number;
+  maxAbsYawRateRadPerSecAtMinSpeed: number;
+  maxAbsYawRateRadPerSecAtHighSpeed: number;
+  maxAbsCurvatureAtMinSpeed: number;
+  maxAbsCurvatureAtHighSpeed: number;
+  highSpeedMps: number;
+  minStraightnessScore: number;
   maxSampleGapSec: number;
   minWindowDurationSec: number;
   maxWindowDurationSec: number;
@@ -220,6 +234,9 @@ export interface SteeringSampleSummary {
   steeringTorque: number;
   vEgo: number;
   yawRate: number;
+  contextYawRateRadPerSec: number | null;
+  contextCurvature: number | null;
+  straightnessScore: number;
 }
 
 export interface SteeringWindowSummary {
@@ -234,6 +251,10 @@ export interface SteeringWindowSummary {
   p90SteeringAngleDeg: number;
   medianAbsoluteDeviationDeg: number;
   medianSpeedMps: number;
+  medianStraightnessScore: number;
+  medianContextYawRateRadPerSec: number | null;
+  medianContextCurvature: number | null;
+  contextSignalCoveragePct: number;
   maxAngleRangeDeg: number;
   supportingSamples: SteeringSampleSummary[];
 }
@@ -247,6 +268,24 @@ export interface SteeringCandidateSegmentSummary {
   p90AbsSteeringAngleDeg: number | null;
 }
 
+export interface SteeringSignalAvailability {
+  controlsStateMessages: number;
+  lateralPlanMessages: number;
+  liveLocationKalmanMessages: number;
+  livePoseMessages: number;
+  samplesWithContextYaw: number;
+  samplesWithCurvature: number;
+  samplesWithAnyContext: number;
+}
+
+export interface SteeringDiagnosticClassification {
+  kind: SteeringDiagnosticClassificationKind;
+  label: string;
+  explanation: string;
+  signConsistencyPct: number;
+  windowMedianSpreadDeg: number | null;
+}
+
 export interface SteeringCenterDiagnosticResult {
   routeName: string;
   routeInfo: RouteInfo | null;
@@ -257,8 +296,10 @@ export interface SteeringCenterDiagnosticResult {
   totalSegments: number;
   totalCarStateMessages: number;
   qualifyingSampleCount: number;
+  signalAvailability: SteeringSignalAvailability;
   stableDurationSec: number;
   confidence: SteeringConfidence;
+  classification: SteeringDiagnosticClassification;
   resultType: "estimated" | "no-stable-window" | "incomplete";
   medianSteeringAngleDeg: number | null;
   medianAbsoluteDeviationDeg: number | null;
@@ -273,6 +314,15 @@ interface SteeringSample extends SteeringSampleSummary {
   standstill: boolean;
   leftBlinker: boolean;
   rightBlinker: boolean;
+  controlsCurvature: number | null;
+  desiredCurvature: number | null;
+  lateralPlanCurvature: number | null;
+  locationYawRate: number | null;
+  locationSpeed: number | null;
+  poseYawRate: number | null;
+  poseSpeed: number | null;
+  independentYawSignalCount: number;
+  curvatureSignalCount: number;
 }
 
 const DEFAULT_STEERING_FILTERS: SteeringWindowFilters = {
@@ -284,6 +334,12 @@ const DEFAULT_STEERING_FILTERS: SteeringWindowFilters = {
   minSpeedMps: 8,
   maxAbsSteeringAngleDeg: 15,
   maxAbsSteeringRateDeg: 2,
+  maxAbsYawRateRadPerSecAtMinSpeed: 0.025,
+  maxAbsYawRateRadPerSecAtHighSpeed: 0.012,
+  maxAbsCurvatureAtMinSpeed: 0.0018,
+  maxAbsCurvatureAtHighSpeed: 0.0008,
+  highSpeedMps: 30,
+  minStraightnessScore: 0.7,
   maxSampleGapSec: 1,
   minWindowDurationSec: 6,
   maxWindowDurationSec: 20,
@@ -506,6 +562,12 @@ export async function scanRouteForSteeringCenterDiagnostic(
   let initData: InitDataMessage | null = null;
   let decodedSegments = 0;
   let totalCarStateMessages = 0;
+  const signalMessageCounts = {
+    controlsStateMessages: 0,
+    lateralPlanMessages: 0,
+    liveLocationKalmanMessages: 0,
+    livePoseMessages: 0,
+  };
   const candidateSegments = await scanQlogSteeringCandidates(context, filters, onProgress);
   const scannedLogUrls = selectSteeringRlogUrls(context.logUrls, candidateSegments, filters);
   const rlogWork = scannedLogUrls.map((logUrl, index) => ({
@@ -543,9 +605,13 @@ export async function scanRouteForSteeringCenterDiagnostic(
       const segmentScan = result.scan;
       decodedSegments += 1;
       totalCarStateMessages += segmentScan.carStates.length;
+      signalMessageCounts.controlsStateMessages += segmentScan.context.controlsState.length;
+      signalMessageCounts.lateralPlanMessages += segmentScan.context.lateralPlan.length;
+      signalMessageCounts.liveLocationKalmanMessages += segmentScan.context.liveLocationKalman.length;
+      signalMessageCounts.livePoseMessages += segmentScan.context.livePose.length;
       initData ??= segmentScan.initData;
       context.routeInfo = routeInfoWithDeviceType(context.routeInfo, context.routeName, segmentScan.deviceType);
-      samples.push(...segmentScan.carStates.map((message) => summarizeSteeringSample(message, result.work.logUrl, result.work.segment)));
+      samples.push(...summarizeSteeringSegmentSamples(segmentScan, result.work.logUrl, result.work.segment, filters));
     }
 
     const interimWindows = findStableSteeringWindows(samples, filters);
@@ -561,11 +627,31 @@ export async function scanRouteForSteeringCenterDiagnostic(
         phase: "done",
         message: `Found ${interimWindows.length} stable straight-driving windows after ${decodedSegments} ${logFileKind(context.source)} segment(s).`,
       });
-      return buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters, candidateSegments);
+      return buildSteeringCenterResult(
+        context,
+        initData,
+        readFailures,
+        decodedSegments,
+        totalCarStateMessages,
+        signalMessageCounts,
+        samples,
+        filters,
+        candidateSegments,
+      );
     }
   }
 
-  const result = buildSteeringCenterResult(context, initData, readFailures, decodedSegments, totalCarStateMessages, samples, filters, candidateSegments);
+  const result = buildSteeringCenterResult(
+    context,
+    initData,
+    readFailures,
+    decodedSegments,
+    totalCarStateMessages,
+    signalMessageCounts,
+    samples,
+    filters,
+    candidateSegments,
+  );
   onProgress({
     phase: "done",
     message:
@@ -691,6 +777,7 @@ async function downloadSteeringSegmentScan(
     initData: fingerprintMessages.initData,
     deviceType: fingerprintMessages.deviceType ?? findDeviceType(decompressed),
     carStates: findCarStateMessages(decompressed),
+    context: findSteeringContextMessages(decompressed),
   };
 }
 
@@ -708,7 +795,7 @@ async function scanQlogSteeringCandidates(
     const segment = segmentFromUrl(logUrl);
     try {
       const segmentScan = await downloadSteeringSegmentScan(logUrl, segment, index, candidateQlogs.length, "qlogs", onProgress);
-      const samples = segmentScan.carStates.map((message) => summarizeSteeringSample(message, logUrl, segment));
+      const samples = summarizeSteeringSegmentSamples(segmentScan, logUrl, segment, filters);
       const summary = summarizeCandidateSegment(segment, samples, filters);
       if (summary.sampleCount > 0) summaries.push(summary);
       context.routeInfo = routeInfoWithDeviceType(context.routeInfo, context.routeName, segmentScan.deviceType);
@@ -813,7 +900,62 @@ function previewForSegment(
   return nearest ? { logUrl: nearest.url, segment: nearest.segment, reason } : null;
 }
 
-function summarizeSteeringSample(message: CarStateMessage, logUrl: string, segment: number): SteeringSample {
+interface AlignedSteeringContext {
+  controlsState: ControlsStateMessage | null;
+  lateralPlan: LateralPlanMessage | null;
+  liveLocationKalman: LiveLocationKalmanMessage | null;
+  livePose: LivePoseMessage | null;
+}
+
+function summarizeSteeringSegmentSamples(
+  segmentScan: SteeringSegmentScan,
+  logUrl: string,
+  segment: number,
+  filters: SteeringWindowFilters,
+): SteeringSample[] {
+  const context = sortedSteeringContext(segmentScan.context);
+  return segmentScan.carStates.map((message) => {
+    const alignedContext = alignSteeringContext(message.logMonoTime, context);
+    return summarizeSteeringSample(message, logUrl, segment, alignedContext, filters);
+  });
+}
+
+function summarizeSteeringSample(
+  message: CarStateMessage,
+  logUrl: string,
+  segment: number,
+  context: AlignedSteeringContext,
+  filters: SteeringWindowFilters,
+): SteeringSample {
+  const controlsCurvature = finiteOrNull(context.controlsState?.curvature);
+  const desiredCurvature = finiteOrNull(context.controlsState?.desiredCurvature);
+  const lateralPlanCurvature = finiteOrNull(context.lateralPlan?.firstCurvature);
+  const locationYawRate = finiteOrNull(context.liveLocationKalman?.yawRateCalibrated);
+  const locationSpeed = finiteOrNull(context.liveLocationKalman?.speedCalibrated);
+  const poseYawRate = finiteOrNull(context.livePose?.yawRateDevice);
+  const poseSpeed = finiteOrNull(context.livePose?.speedDevice);
+  const contextYawRateRadPerSec = medianFinite([locationYawRate, poseYawRate]);
+  const contextCurvature = medianFinite([controlsCurvature, desiredCurvature, lateralPlanCurvature]);
+  const independentYawSignalCount = [locationYawRate, poseYawRate].filter((value) => value !== null).length;
+  const curvatureSignalCount = [controlsCurvature, desiredCurvature, lateralPlanCurvature].filter((value) => value !== null).length;
+  const straightnessScore = steeringStraightnessScore(
+    {
+      ...message,
+      controlsCurvature,
+      desiredCurvature,
+      lateralPlanCurvature,
+      locationYawRate,
+      locationSpeed,
+      poseYawRate,
+      poseSpeed,
+      contextYawRateRadPerSec,
+      contextCurvature,
+      independentYawSignalCount,
+      curvatureSignalCount,
+    },
+    filters,
+  );
+
   return {
     logUrl,
     segment,
@@ -823,11 +965,63 @@ function summarizeSteeringSample(message: CarStateMessage, logUrl: string, segme
     steeringTorque: message.steeringTorque,
     vEgo: message.vEgo,
     yawRate: message.yawRate,
+    contextYawRateRadPerSec,
+    contextCurvature,
+    straightnessScore,
     steeringPressed: message.steeringPressed,
     standstill: message.standstill,
     leftBlinker: message.leftBlinker,
     rightBlinker: message.rightBlinker,
+    controlsCurvature,
+    desiredCurvature,
+    lateralPlanCurvature,
+    locationYawRate,
+    locationSpeed,
+    poseYawRate,
+    poseSpeed,
+    independentYawSignalCount,
+    curvatureSignalCount,
   };
+}
+
+function sortedSteeringContext(context: SteeringContextMessages): SteeringContextMessages {
+  return {
+    controlsState: [...context.controlsState].sort(compareLogMonoTime),
+    lateralPlan: [...context.lateralPlan].sort(compareLogMonoTime),
+    liveLocationKalman: [...context.liveLocationKalman].sort(compareLogMonoTime),
+    livePose: [...context.livePose].sort(compareLogMonoTime),
+  };
+}
+
+function alignSteeringContext(logMonoTime: bigint, context: SteeringContextMessages): AlignedSteeringContext {
+  return {
+    controlsState: nearestByLogMonoTime(context.controlsState, logMonoTime, 250_000_000n),
+    lateralPlan: nearestByLogMonoTime(context.lateralPlan, logMonoTime, 250_000_000n),
+    liveLocationKalman: nearestByLogMonoTime(context.liveLocationKalman, logMonoTime, 500_000_000n),
+    livePose: nearestByLogMonoTime(context.livePose, logMonoTime, 250_000_000n),
+  };
+}
+
+function nearestByLogMonoTime<T extends { logMonoTime: bigint }>(items: T[], target: bigint, maxDelta: bigint): T | null {
+  if (items.length === 0) return null;
+  let low = 0;
+  let high = items.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (items[mid].logMonoTime < target) low = mid + 1;
+    else high = mid - 1;
+  }
+
+  const before = items[high] ?? null;
+  const after = items[low] ?? null;
+  const nearest =
+    before && after
+      ? absBigInt(before.logMonoTime - target) <= absBigInt(after.logMonoTime - target)
+        ? before
+        : after
+      : before ?? after;
+  if (!nearest || absBigInt(nearest.logMonoTime - target) > maxDelta) return null;
+  return nearest;
 }
 
 function buildSteeringCenterResult(
@@ -836,6 +1030,7 @@ function buildSteeringCenterResult(
   readFailures: LogReadFailure[],
   decodedSegments: number,
   totalCarStateMessages: number,
+  signalMessageCounts: Omit<SteeringSignalAvailability, "samplesWithContextYaw" | "samplesWithCurvature" | "samplesWithAnyContext">,
   samples: SteeringSample[],
   filters: SteeringWindowFilters,
   candidateSegments: SteeringCandidateSegmentSummary[],
@@ -848,7 +1043,9 @@ function buildSteeringCenterResult(
     medianSteeringAngleDeg === null ? null : median(angles.map((angle) => Math.abs(angle - medianSteeringAngleDeg)));
   const stableDurationSec = sumWindowDuration(stableWindows);
   const qualifyingSampleCount = samples.filter((sample) => isQualifyingSteeringSample(sample, filters)).length;
+  const signalAvailability = steeringSignalAvailability(samples, signalMessageCounts);
   const confidence = steeringConfidence(stableWindows, stableSamples.length, stableDurationSec, medianAbsoluteDeviationDeg, filters);
+  const classification = classifySteeringDiagnostic(stableWindows, medianSteeringAngleDeg, medianAbsoluteDeviationDeg, confidence);
   const caveats = steeringCaveats({
     confidence,
     decodedSegments,
@@ -857,6 +1054,7 @@ function buildSteeringCenterResult(
     totalSegments: context.logUrls.length,
     totalCarStateMessages,
     qualifyingSampleCount,
+    signalAvailability,
   });
 
   return {
@@ -869,8 +1067,10 @@ function buildSteeringCenterResult(
     totalSegments: context.logUrls.length,
     totalCarStateMessages,
     qualifyingSampleCount,
+    signalAvailability,
     stableDurationSec,
     confidence,
+    classification,
     resultType: confidence === "none" ? (readFailures.length > 0 ? "incomplete" : "no-stable-window") : "estimated",
     medianSteeringAngleDeg,
     medianAbsoluteDeviationDeg,
@@ -935,6 +1135,10 @@ function stableWindowCandidates(run: SteeringSample[], filters: SteeringWindowFi
 function summarizeSteeringWindow(samples: SteeringSample[]): SteeringWindowSummary {
   const angles = samples.map((sample) => sample.steeringAngleDeg);
   const speeds = samples.map((sample) => sample.vEgo);
+  const scores = samples.map((sample) => sample.straightnessScore);
+  const contextYawRates = samples.map((sample) => sample.contextYawRateRadPerSec).filter((value): value is number => value !== null);
+  const contextCurvatures = samples.map((sample) => sample.contextCurvature).filter((value): value is number => value !== null);
+  const contextSamples = samples.filter((sample) => sample.contextYawRateRadPerSec !== null || sample.contextCurvature !== null);
   const first = samples[0];
   const last = samples.at(-1) ?? first;
   const windowMedianAngle = median(angles) ?? 0;
@@ -954,6 +1158,10 @@ function summarizeSteeringWindow(samples: SteeringSample[]): SteeringWindowSumma
     p90SteeringAngleDeg: percentile(angles, 0.9) ?? 0,
     medianAbsoluteDeviationDeg: median(angles.map((angle) => Math.abs(angle - windowMedianAngle))) ?? 0,
     medianSpeedMps: median(speeds) ?? 0,
+    medianStraightnessScore: median(scores) ?? 0,
+    medianContextYawRateRadPerSec: median(contextYawRates),
+    medianContextCurvature: median(contextCurvatures),
+    contextSignalCoveragePct: samples.length === 0 ? 0 : contextSamples.length / samples.length,
     maxAngleRangeDeg: angleRange(samples),
     supportingSamples,
   };
@@ -969,6 +1177,9 @@ function toPublicSteeringSample(sample: SteeringSample): SteeringSampleSummary {
     steeringTorque: sample.steeringTorque,
     vEgo: sample.vEgo,
     yawRate: sample.yawRate,
+    contextYawRateRadPerSec: sample.contextYawRateRadPerSec,
+    contextCurvature: sample.contextCurvature,
+    straightnessScore: sample.straightnessScore,
   };
 }
 
@@ -980,11 +1191,105 @@ function isQualifyingSteeringSample(sample: SteeringSample, filters: SteeringWin
     sample.vEgo >= filters.minSpeedMps &&
     Math.abs(sample.steeringAngleDeg) <= filters.maxAbsSteeringAngleDeg &&
     Math.abs(sample.steeringRateDeg) <= filters.maxAbsSteeringRateDeg &&
+    sample.straightnessScore >= filters.minStraightnessScore &&
     !sample.steeringPressed &&
     !sample.standstill &&
     !sample.leftBlinker &&
     !sample.rightBlinker
   );
+}
+
+interface SteeringStraightnessInput extends CarStateMessage {
+  controlsCurvature: number | null;
+  desiredCurvature: number | null;
+  lateralPlanCurvature: number | null;
+  locationYawRate: number | null;
+  locationSpeed: number | null;
+  poseYawRate: number | null;
+  poseSpeed: number | null;
+  contextYawRateRadPerSec: number | null;
+  contextCurvature: number | null;
+  independentYawSignalCount: number;
+  curvatureSignalCount: number;
+}
+
+function steeringStraightnessScore(sample: SteeringStraightnessInput, filters: SteeringWindowFilters): number {
+  if (
+    !Number.isFinite(sample.steeringAngleDeg) ||
+    !Number.isFinite(sample.steeringRateDeg) ||
+    !Number.isFinite(sample.vEgo) ||
+    sample.vEgo < filters.minSpeedMps ||
+    Math.abs(sample.steeringAngleDeg) > filters.maxAbsSteeringAngleDeg ||
+    Math.abs(sample.steeringRateDeg) > filters.maxAbsSteeringRateDeg ||
+    sample.steeringPressed ||
+    sample.standstill ||
+    sample.leftBlinker ||
+    sample.rightBlinker
+  ) {
+    return 0;
+  }
+
+  const yawThreshold = speedAwareThreshold(
+    sample.vEgo,
+    filters.minSpeedMps,
+    filters.highSpeedMps,
+    filters.maxAbsYawRateRadPerSecAtMinSpeed,
+    filters.maxAbsYawRateRadPerSecAtHighSpeed,
+  );
+  const curvatureThreshold = speedAwareThreshold(
+    sample.vEgo,
+    filters.minSpeedMps,
+    filters.highSpeedMps,
+    filters.maxAbsCurvatureAtMinSpeed,
+    filters.maxAbsCurvatureAtHighSpeed,
+  );
+
+  const components = [
+    normalizedStraightComponent(Math.abs(sample.steeringRateDeg), filters.maxAbsSteeringRateDeg),
+    normalizedStraightComponent(Math.abs(sample.steeringAngleDeg), filters.maxAbsSteeringAngleDeg),
+  ];
+
+  const yawSignals = [finiteOrNull(sample.yawRate), sample.locationYawRate, sample.poseYawRate].filter((value): value is number => value !== null);
+  if (yawSignals.length > 0) {
+    components.push(normalizedStraightComponent(Math.abs(medianFinite(yawSignals) ?? 0), yawThreshold));
+  }
+
+  const curvatureSignals = [sample.controlsCurvature, sample.desiredCurvature, sample.lateralPlanCurvature].filter(
+    (value): value is number => value !== null,
+  );
+  if (curvatureSignals.length > 0) {
+    components.push(normalizedStraightComponent(Math.abs(medianFinite(curvatureSignals) ?? 0), curvatureThreshold));
+  }
+
+  const weakestComponent = Math.min(...components);
+  const contextBonus = sample.independentYawSignalCount + sample.curvatureSignalCount > 0 ? 0.05 : 0;
+  return clamp01(weakestComponent + contextBonus);
+}
+
+function normalizedStraightComponent(value: number, threshold: number): number {
+  if (!Number.isFinite(value) || threshold <= 0) return 0;
+  if (value <= threshold) return 1;
+  if (value >= threshold * 1.8) return 0;
+  return 1 - (value - threshold) / (threshold * 0.8);
+}
+
+function speedAwareThreshold(speedMps: number, minSpeedMps: number, highSpeedMps: number, lowSpeedValue: number, highSpeedValue: number): number {
+  if (speedMps <= minSpeedMps) return lowSpeedValue;
+  if (speedMps >= highSpeedMps) return highSpeedValue;
+  const t = (speedMps - minSpeedMps) / (highSpeedMps - minSpeedMps);
+  return lowSpeedValue + (highSpeedValue - lowSpeedValue) * t;
+}
+
+function steeringSignalAvailability(
+  samples: SteeringSample[],
+  messageCounts: Omit<SteeringSignalAvailability, "samplesWithContextYaw" | "samplesWithCurvature" | "samplesWithAnyContext">,
+): SteeringSignalAvailability {
+  return {
+    ...messageCounts,
+    samplesWithContextYaw: samples.filter((sample) => sample.contextYawRateRadPerSec !== null).length,
+    samplesWithCurvature: samples.filter((sample) => sample.contextCurvature !== null).length,
+    samplesWithAnyContext: samples.filter((sample) => sample.contextYawRateRadPerSec !== null || sample.contextCurvature !== null).length,
+  };
 }
 
 function samplesInsideWindows(samples: SteeringSample[], windows: SteeringWindowSummary[]): SteeringSample[] {
@@ -1019,6 +1324,72 @@ function steeringConfidence(
   return "low";
 }
 
+function classifySteeringDiagnostic(
+  windows: SteeringWindowSummary[],
+  medianSteeringAngleDeg: number | null,
+  medianAbsoluteDeviationDeg: number | null,
+  confidence: SteeringConfidence,
+): SteeringDiagnosticClassification {
+  const windowMedians = windows.map((window) => window.medianSteeringAngleDeg).filter(Number.isFinite);
+  const absMedian = Math.abs(medianSteeringAngleDeg ?? 0);
+  const sign = Math.sign(medianSteeringAngleDeg ?? 0);
+  const signConsistencyPct =
+    sign === 0 || windowMedians.length === 0
+      ? 0
+      : windowMedians.filter((value) => Math.sign(value) === sign || Math.abs(value) < 0.25).length / windowMedians.length;
+  const p10WindowMedian = percentile(windowMedians, 0.1);
+  const p90WindowMedian = percentile(windowMedians, 0.9);
+  const windowMedianSpreadDeg = p10WindowMedian === null || p90WindowMedian === null ? null : p90WindowMedian - p10WindowMedian;
+
+  if (confidence === "none" || medianSteeringAngleDeg === null) {
+    return {
+      kind: "inconclusive",
+      label: "Inconclusive",
+      explanation: "No stable straight-driving windows survived the filters.",
+      signConsistencyPct,
+      windowMedianSpreadDeg,
+    };
+  }
+
+  if (confidence === "low") {
+    return {
+      kind: "inconclusive",
+      label: "Low evidence",
+      explanation: "The route had too little stable, consistent straight-driving evidence for a diagnostic call.",
+      signConsistencyPct,
+      windowMedianSpreadDeg,
+    };
+  }
+
+  if (absMedian < 0.75 && (medianAbsoluteDeviationDeg ?? Infinity) < 1.25) {
+    return {
+      kind: "likely-normal",
+      label: "Likely normal",
+      explanation: "The accepted windows cluster near zero steering angle.",
+      signConsistencyPct,
+      windowMedianSpreadDeg,
+    };
+  }
+
+  if (absMedian >= 1.25 && signConsistencyPct >= 0.75 && (medianAbsoluteDeviationDeg ?? Infinity) <= 1.5) {
+    return {
+      kind: "bias-candidate",
+      label: "Persistent steering bias candidate",
+      explanation: "Most accepted windows lean the same direction, which is useful evidence for steering center or sensor-offset review.",
+      signConsistencyPct,
+      windowMedianSpreadDeg,
+    };
+  }
+
+  return {
+    kind: "route-sensitive",
+    label: "Route or road sensitive",
+    explanation: "The accepted windows do not cluster tightly enough to separate vehicle bias from road crown, wind, or route curvature.",
+    signConsistencyPct,
+    windowMedianSpreadDeg,
+  };
+}
+
 function steeringCaveats({
   confidence,
   decodedSegments,
@@ -1027,6 +1398,7 @@ function steeringCaveats({
   totalSegments,
   totalCarStateMessages,
   qualifyingSampleCount,
+  signalAvailability,
 }: {
   confidence: SteeringConfidence;
   decodedSegments: number;
@@ -1035,9 +1407,10 @@ function steeringCaveats({
   totalSegments: number;
   totalCarStateMessages: number;
   qualifyingSampleCount: number;
+  signalAvailability: SteeringSignalAvailability;
 }): string[] {
   const caveats = [
-    "This estimates logged steering-wheel center from straight, steady driving; it is not a mechanical alignment diagnosis by itself.",
+    "This estimates logged steering-wheel center from speed-aware straight-driving windows; it is not a mechanical alignment diagnosis by itself.",
     "Road crown, wind, tire pressure, lane curvature, sensor offset, and driver input can shift the median.",
   ];
   if (confidence === "none") {
@@ -1057,7 +1430,19 @@ function steeringCaveats({
   if (totalCarStateMessages === 0) {
     caveats.push("No carState messages were decoded from the scanned logs.");
   } else if (qualifyingSampleCount === 0) {
-    caveats.push("carState messages were present, but all samples were rejected by speed, steering-rate, blinker, standstill, or driver-steering filters.");
+    caveats.push(
+      "carState messages were present, but all samples were rejected by speed, steering-rate, yaw/curvature, blinker, standstill, or driver-steering filters.",
+    );
+  }
+  if (
+    totalCarStateMessages > 0 &&
+    signalAvailability.controlsStateMessages +
+      signalAvailability.lateralPlanMessages +
+      signalAvailability.liveLocationKalmanMessages +
+      signalAvailability.livePoseMessages ===
+      0
+  ) {
+    caveats.push("No controlsState, lateralPlan, liveLocationKalman, or livePose context was decoded, so straightness relied on carState only.");
   }
   return caveats;
 }
@@ -1096,6 +1481,26 @@ function percentile(values: number[], p: number): number | null {
   if (lower === upper) return sorted[lower];
   const weight = position - lower;
   return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+}
+
+function medianFinite(values: Array<number | null | undefined>): number | null {
+  return median(values.filter((value): value is number => Number.isFinite(value)));
+}
+
+function finiteOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function absBigInt(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function compareLogMonoTime<T extends { logMonoTime: bigint }>(a: T, b: T): number {
+  return Number(a.logMonoTime - b.logMonoTime);
 }
 
 function summarizeCarParams(message: CarParamsMessage, logUrl: string, segment: number): CarParamsSummary {

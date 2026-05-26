@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalibrationMessage, FingerprintLogMessages } from "./capnp";
-import { findCarStateMessages, findDeviceType, findFingerprintLogMessages } from "./capnp";
+import { findCarStateMessages, findDeviceType, findFingerprintLogMessages, findSteeringContextMessages } from "./capnp";
 import { decompressLog } from "./decompress";
 import { scanRouteForFingerprintDebug, scanRouteForInvalidCalibration, scanRouteForSteeringCenterDiagnostic } from "./scan";
 
@@ -21,6 +21,12 @@ vi.mock("./capnp", () => ({
     canMessages: [],
   })),
   findCarStateMessages: vi.fn(() => []),
+  findSteeringContextMessages: vi.fn(() => ({
+    controlsState: [],
+    lateralPlan: [],
+    liveLocationKalman: [],
+    livePose: [],
+  })),
   findCalibrationMessages: vi.fn(() => [
     {
       logMonoTime: 1n,
@@ -276,6 +282,12 @@ describe("full route scan", () => {
       },
       deviceType: "mici",
     });
+    vi.mocked(findSteeringContextMessages).mockReturnValue({
+      controlsState: [],
+      lateralPlan: [],
+      liveLocationKalman: [],
+      livePose: [],
+    });
     vi.mocked(findCarStateMessages).mockImplementation(() =>
       Array.from({ length: 80 }, (_, index) => ({
         logMonoTime: BigInt(index) * 100_000_000n,
@@ -299,6 +311,7 @@ describe("full route scan", () => {
     expect(result.medianSteeringAngleDeg).toBeCloseTo(1.5);
     expect(result.stableWindows.length).toBeGreaterThan(0);
     expect(result.filters.minSpeedMps).toBe(8);
+    expect(result.signalAvailability.samplesWithAnyContext).toBe(0);
     expect(result.caveats.join(" ")).toContain("not a mechanical alignment diagnosis");
   });
 

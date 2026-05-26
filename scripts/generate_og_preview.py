@@ -76,9 +76,9 @@ def main() -> None:
     text(draw, (80, 150), "Steering", 66, "#f7fbf9", True)
     text(draw, (80, 224), "centering", 66, "#f7fbf9", True)
     text(draw, (80, 298), "diagnostic", 66, "#f7fbf9", True)
-    text(draw, (82, 414), "Scan public routes for stable", 27, "#cfe0da", False)
-    text(draw, (82, 454), "straight-driving carState windows", 27, "#cfe0da", False)
-    text(draw, (82, 494), "and median steeringAngleDeg.", 27, "#cfe0da", False)
+    text(draw, (82, 414), "Scan public routes for rlog", 27, "#cfe0da", False)
+    text(draw, (82, 454), "yaw, pose, controls, planner", 27, "#cfe0da", False)
+    text(draw, (82, 494), "and steering center evidence.", 27, "#cfe0da", False)
 
     draw.rounded_rectangle((80, 530, 600, 582), radius=26, fill="#244540")
     fitted_text(
@@ -95,8 +95,8 @@ def main() -> None:
     draw.rounded_rectangle((682, 130, 1120, 500), radius=24, fill="#203034", outline="#3a5550", width=2)
     text(draw, (720, 176), "Center estimate", 33, "#f7fbf9", True)
     evidence_row(draw, 242, "Median angle", "+1.48 deg")
-    evidence_row(draw, 326, "Confidence", "stable windows found", "#b7d7ff")
-    evidence_row(draw, 410, "Filters", "speed, rate, blinkers", "#ffd38f")
+    evidence_row(draw, 326, "Signal coverage", "yaw + curvature", "#b7d7ff")
+    evidence_row(draw, 410, "Filters", "speed-aware straight", "#ffd38f")
 
     image.save(OUT, "PNG", optimize=True)
 

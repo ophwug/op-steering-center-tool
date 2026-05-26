@@ -48,8 +48,14 @@ export const CALIBRATION_STATUS_NAMES: Record<number, string> = {
 export const LIVE_CALIBRATION_UNION_TAG = 18;
 export const CAN_UNION_TAG = 4;
 export const INIT_DATA_UNION_TAG = 0;
+export const CONTROLS_STATE_UNION_TAG = 6;
 export const CAR_PARAMS_UNION_TAG = 67;
 export const CAR_STATE_UNION_TAG = 21;
+export const CAR_CONTROL_UNION_TAG = 22;
+export const LATERAL_PLAN_DEPRECATED_UNION_TAG = 63;
+export const LIVE_LOCATION_KALMAN_DEPRECATED_UNION_TAG = 70;
+export const MODEL_V2_UNION_TAG = 73;
+export const LIVE_POSE_UNION_TAG = 127;
 export const ONROAD_EVENTS_UNION_TAG = 132;
 
 export const FINGERPRINT_EVENT_NAMES: Record<number, string> = {

@@ -1,20 +1,23 @@
 # openpilot steering centering diagnostic
 
 A small all-client-side web app that scans a public openpilot route and estimates
-logged steering wheel center from `carState.steeringAngleDeg`.
+logged steering wheel center from stable straight-driving windows.
 
 It fetches comma's public route file list, requires uploaded rlogs for full-rate
-`carState`, supports `.zst` and `.bz2`, decompresses in the browser, and decodes
+analysis, supports `.zst` and `.bz2`, decompresses in the browser, and decodes
 just enough Cap'n Proto to summarize:
 
 - qlog candidate segments, when available, to cheaply pick promising rlog
   segments by speed and steady steering
 - `carState` speed, steering angle, steering rate, steering torque, steering
   pressed, standstill, blinker, and yaw-rate fields
-- stable straight-driving windows that pass speed, steering-rate, blinker,
-  standstill, driver-steering, sample-gap, duration, and angle-range filters
+- rlog context from `controlsState`, deprecated `lateralPlan`, deprecated
+  `liveLocationKalman`, and `livePose` when present
+- stable straight-driving windows that pass speed-aware yaw-rate, curvature,
+  steering-rate, blinker, standstill, driver-steering, sample-gap, duration,
+  and angle-range filters
 - the median steeringAngleDeg across accepted windows, plus confidence, spread,
-  caveats, and supporting sample log times
+  signal coverage, caveats, and supporting sample log times
 
 The result is meant to package route evidence for human review when a vehicle
 appears to need steering wheel centering or steering sensor offset diagnosis. It

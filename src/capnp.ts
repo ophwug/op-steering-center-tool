@@ -3,10 +3,14 @@ import {
   CAN_UNION_TAG,
   CAR_PARAMS_UNION_TAG,
   CAR_STATE_UNION_TAG,
+  CONTROLS_STATE_UNION_TAG,
   FINGERPRINT_EVENT_NAMES,
   FINGERPRINT_SOURCE_NAMES,
   INIT_DATA_UNION_TAG,
+  LATERAL_PLAN_DEPRECATED_UNION_TAG,
   LIVE_CALIBRATION_UNION_TAG,
+  LIVE_LOCATION_KALMAN_DEPRECATED_UNION_TAG,
+  LIVE_POSE_UNION_TAG,
   ONROAD_EVENTS_UNION_TAG,
 } from "./constants";
 
@@ -94,6 +98,38 @@ export interface CarStateMessage {
   standstill: boolean;
   leftBlinker: boolean;
   rightBlinker: boolean;
+}
+
+export interface ControlsStateMessage {
+  logMonoTime: bigint;
+  curvature: number;
+  desiredCurvature: number;
+  lateralPlanMonoTime: bigint;
+}
+
+export interface LateralPlanMessage {
+  logMonoTime: bigint;
+  curvatures: number[];
+  firstCurvature: number | null;
+}
+
+export interface LiveLocationKalmanMessage {
+  logMonoTime: bigint;
+  speedCalibrated: number | null;
+  yawRateCalibrated: number | null;
+}
+
+export interface LivePoseMessage {
+  logMonoTime: bigint;
+  speedDevice: number | null;
+  yawRateDevice: number | null;
+}
+
+export interface SteeringContextMessages {
+  controlsState: ControlsStateMessage[];
+  lateralPlan: LateralPlanMessage[];
+  liveLocationKalman: LiveLocationKalmanMessage[];
+  livePose: LivePoseMessage[];
 }
 
 export interface FingerprintLogMessages {
@@ -211,6 +247,41 @@ const CAR_STATE_DATA_FIELDS = {
   leftBlinkerBool: 69,
   rightBlinkerBool: 70,
   yawRate: 9,
+} as const;
+
+const CONTROLS_STATE_DATA_FIELDS = {
+  curvature: 34,
+  desiredCurvature: 44,
+  lateralPlanMonoTime: 20,
+} as const;
+
+const LATERAL_PLAN_POINTER_FIELDS = {
+  curvatures: 6,
+} as const;
+
+const LIVE_LOCATION_KALMAN_POINTER_FIELDS = {
+  velocityCalibrated: 10,
+  angularVelocityCalibrated: 12,
+} as const;
+
+const LIVE_LOCATION_MEASUREMENT_POINTER_FIELDS = {
+  value: 0,
+} as const;
+
+const LIVE_LOCATION_MEASUREMENT_DATA_FIELDS = {
+  validBool: 0,
+} as const;
+
+const LIVE_POSE_POINTER_FIELDS = {
+  velocityDevice: 1,
+  angularVelocityDevice: 3,
+} as const;
+
+const LIVE_POSE_XYZ_FIELDS = {
+  x: 0,
+  y: 1,
+  z: 2,
+  validBool: 192,
 } as const;
 
 const ECU_NAMES: Record<number, string> = {
@@ -367,6 +438,44 @@ export function findCarStateMessages(bytes: Uint8Array): CarStateMessage[] {
   return messages;
 }
 
+export function findSteeringContextMessages(bytes: Uint8Array): SteeringContextMessages {
+  const messages: SteeringContextMessages = {
+    controlsState: [],
+    lateralPlan: [],
+    liveLocationKalman: [],
+    livePose: [],
+  };
+
+  for (const segments of readMessages(bytes)) {
+    if (segments.length === 0) continue;
+    const root = readEventRoot(segments);
+    if (!root) continue;
+
+    const unionTag = getUint16(root, EVENT_UNION_TAG_BYTE_OFFSET);
+    if (unionTag === CONTROLS_STATE_UNION_TAG) {
+      const message = readControlsStateMessageFromRoot(root, segments);
+      if (message) messages.controlsState.push(message);
+      continue;
+    }
+    if (unionTag === LATERAL_PLAN_DEPRECATED_UNION_TAG) {
+      const message = readLateralPlanMessageFromRoot(root, segments);
+      if (message) messages.lateralPlan.push(message);
+      continue;
+    }
+    if (unionTag === LIVE_LOCATION_KALMAN_DEPRECATED_UNION_TAG) {
+      const message = readLiveLocationKalmanMessageFromRoot(root, segments);
+      if (message) messages.liveLocationKalman.push(message);
+      continue;
+    }
+    if (unionTag === LIVE_POSE_UNION_TAG) {
+      const message = readLivePoseMessageFromRoot(root, segments);
+      if (message) messages.livePose.push(message);
+    }
+  }
+
+  return messages;
+}
+
 export function readLiveCalibrationMessage(segments: SegmentData[]): CalibrationMessage | null {
   const root = readEventRoot(segments);
   if (!root) return null;
@@ -492,6 +601,52 @@ function readCarStateMessageFromRoot(root: StructRef & { segmentIndex: number },
   };
 }
 
+function readControlsStateMessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): ControlsStateMessage | null {
+  const controlsState = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!controlsState) return null;
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    curvature: getFloat32ByIndex(controlsState, CONTROLS_STATE_DATA_FIELDS.curvature),
+    desiredCurvature: getFloat32ByIndex(controlsState, CONTROLS_STATE_DATA_FIELDS.desiredCurvature),
+    lateralPlanMonoTime: getBigUint64ByIndex(controlsState, CONTROLS_STATE_DATA_FIELDS.lateralPlanMonoTime),
+  };
+}
+
+function readLateralPlanMessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): LateralPlanMessage | null {
+  const lateralPlan = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!lateralPlan) return null;
+  const curvatures = readFloat32List(lateralPlan, LATERAL_PLAN_POINTER_FIELDS.curvatures);
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    curvatures,
+    firstCurvature: curvatures[0] ?? null,
+  };
+}
+
+function readLiveLocationKalmanMessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): LiveLocationKalmanMessage | null {
+  const liveLocation = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!liveLocation) return null;
+  const velocity = readLiveLocationMeasurement(liveLocation, LIVE_LOCATION_KALMAN_POINTER_FIELDS.velocityCalibrated);
+  const angularVelocity = readLiveLocationMeasurement(liveLocation, LIVE_LOCATION_KALMAN_POINTER_FIELDS.angularVelocityCalibrated);
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    speedCalibrated: vectorMagnitude(velocity),
+    yawRateCalibrated: measurementAxis(angularVelocity, 2),
+  };
+}
+
+function readLivePoseMessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): LivePoseMessage | null {
+  const livePose = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!livePose) return null;
+  const velocity = readLivePoseXyzMeasurement(livePose, LIVE_POSE_POINTER_FIELDS.velocityDevice);
+  const angularVelocity = readLivePoseXyzMeasurement(livePose, LIVE_POSE_POINTER_FIELDS.angularVelocityDevice);
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    speedDevice: vectorMagnitude(velocity),
+    yawRateDevice: angularVelocity?.z ?? null,
+  };
+}
+
 function readDeviceTypeMessage(segments: SegmentData[]): DeviceType | null {
   const root = readEventRoot(segments);
   if (!root) return null;
@@ -560,6 +715,56 @@ function readFloat32List(ref: StructRef & { segmentIndex: number }, pointerIndex
     values.push(view.getFloat32(list.offset + i * 4, true));
   }
   return values;
+}
+
+function readFloat64List(ref: StructRef & { segmentIndex: number }, pointerIndex: number): number[] {
+  if (pointerIndex >= ref.pointerCount) return [];
+  const list = readListPointer(ref.segment, pointerFieldOffset(ref, pointerIndex));
+  if (!list) return [];
+  if (list.elementSize !== 5) {
+    throw new Error(`Expected Float64 list, got Cap'n Proto element size ${list.elementSize}.`);
+  }
+
+  const view = new DataView(list.segment.bytes.buffer, list.segment.bytes.byteOffset, list.segment.bytes.byteLength);
+  const values: number[] = [];
+  for (let i = 0; i < list.elementCount; i += 1) {
+    values.push(view.getFloat64(list.offset + i * 8, true));
+  }
+  return values;
+}
+
+function readLiveLocationMeasurement(ref: StructRef & { segmentIndex: number }, pointerIndex: number): number[] | null {
+  if (pointerIndex >= ref.pointerCount) return null;
+  const measurement = readStructPointer([ref.segment], 0, pointerFieldOffset(ref, pointerIndex));
+  if (!measurement || !getBoolByIndex(measurement, LIVE_LOCATION_MEASUREMENT_DATA_FIELDS.validBool)) return null;
+  const value = readFloat64List(measurement, LIVE_LOCATION_MEASUREMENT_POINTER_FIELDS.value);
+  return value.length > 0 ? value : null;
+}
+
+function readLivePoseXyzMeasurement(
+  ref: StructRef & { segmentIndex: number },
+  pointerIndex: number,
+): { x: number; y: number; z: number } | null {
+  if (pointerIndex >= ref.pointerCount) return null;
+  const measurement = readStructPointer([ref.segment], 0, pointerFieldOffset(ref, pointerIndex));
+  if (!measurement || !getBoolByIndex(measurement, LIVE_POSE_XYZ_FIELDS.validBool)) return null;
+  return {
+    x: getFloat32ByIndex(measurement, LIVE_POSE_XYZ_FIELDS.x),
+    y: getFloat32ByIndex(measurement, LIVE_POSE_XYZ_FIELDS.y),
+    z: getFloat32ByIndex(measurement, LIVE_POSE_XYZ_FIELDS.z),
+  };
+}
+
+function measurementAxis(value: number[] | null, index: number): number | null {
+  const axis = value?.[index];
+  return typeof axis === "number" && Number.isFinite(axis) ? axis : null;
+}
+
+function vectorMagnitude(value: number[] | { x: number; y: number; z: number } | null): number | null {
+  if (!value) return null;
+  const components = Array.isArray(value) ? value : [value.x, value.y, value.z];
+  if (components.length === 0 || components.some((component) => !Number.isFinite(component))) return null;
+  return Math.hypot(...components);
 }
 
 function readTextField(ref: StructRef & { segmentIndex: number }, pointerIndex: number): string {
@@ -678,6 +883,13 @@ function getFloat32ByIndex(ref: StructRef, index: number): number {
   if (offset + 4 > ref.dataOffset + ref.dataWords * WORD_SIZE) return 0;
   const view = new DataView(ref.segment.bytes.buffer, ref.segment.bytes.byteOffset, ref.segment.bytes.byteLength);
   return view.getFloat32(offset, true);
+}
+
+function getBigUint64ByIndex(ref: StructRef, index: number): bigint {
+  const offset = ref.dataOffset + index * 8;
+  if (offset + 8 > ref.dataOffset + ref.dataWords * WORD_SIZE) return 0n;
+  const view = new DataView(ref.segment.bytes.buffer, ref.segment.bytes.byteOffset, ref.segment.bytes.byteLength);
+  return view.getBigUint64(offset, true);
 }
 
 function readUint64(bytes: Uint8Array, byteOffset: number): bigint {

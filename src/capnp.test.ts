@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findCarStateMessages, findDeviceType, findFingerprintLogMessages } from "./capnp";
+import { findCarStateMessages, findDeviceType, findFingerprintLogMessages, findSteeringContextMessages } from "./capnp";
 
 describe("Cap'n Proto log parsing", () => {
   it("reads the stable initData deviceType field", () => {
@@ -51,6 +51,27 @@ describe("Cap'n Proto log parsing", () => {
         rightBlinker: false,
       },
     ]);
+  });
+
+  it("reads steering context messages for straightness scoring", () => {
+    const context = findSteeringContextMessages(
+      concatBytes([
+        controlsStateMessage(),
+        lateralPlanMessage(),
+        liveLocationKalmanMessage(),
+        livePoseMessage(),
+      ]),
+    );
+
+    expect(context.controlsState[0].curvature).toBeCloseTo(0.0004);
+    expect(context.controlsState[0].desiredCurvature).toBeCloseTo(0.0005);
+    expect(context.controlsState[0].lateralPlanMonoTime).toBe(99n);
+    expect(context.lateralPlan[0].firstCurvature).toBeCloseTo(0.0003);
+    expect(context.lateralPlan[0].curvatures[1]).toBeCloseTo(0.0002);
+    expect(context.liveLocationKalman[0].speedCalibrated).toBeCloseTo(20);
+    expect(context.liveLocationKalman[0].yawRateCalibrated).toBeCloseTo(0.006);
+    expect(context.livePose[0].speedDevice).toBeCloseTo(20);
+    expect(context.livePose[0].yawRateDevice).toBeCloseTo(0.007);
   });
 });
 
@@ -139,6 +160,54 @@ function carStateMessage(): Uint8Array {
   return builder.finish();
 }
 
+function controlsStateMessage(): Uint8Array {
+  const builder = new SegmentBuilder(512);
+  const event = builder.initEvent(6);
+  const controlsState = builder.writeStructPointer(event.pointerOffset, 24, 1);
+  builder.view.setBigUint64(controlsState.dataOffset + 20 * 8, 99n, true);
+  builder.view.setFloat32(controlsState.dataOffset + 34 * 4, 0.0004, true);
+  builder.view.setFloat32(controlsState.dataOffset + 44 * 4, 0.0005, true);
+  return builder.finish();
+}
+
+function lateralPlanMessage(): Uint8Array {
+  const builder = new SegmentBuilder(512);
+  const event = builder.initEvent(63);
+  const lateralPlan = builder.writeStructPointer(event.pointerOffset, 1, 7);
+  builder.writeFloat32Pointer(lateralPlan.pointerOffset + 6 * 8, [0.0003, 0.0002]);
+  return builder.finish();
+}
+
+function liveLocationKalmanMessage(): Uint8Array {
+  const builder = new SegmentBuilder(1024);
+  const event = builder.initEvent(70);
+  const liveLocation = builder.writeStructPointer(event.pointerOffset, 1, 13);
+  const velocity = builder.writeStructPointer(liveLocation.pointerOffset + 10 * 8, 1, 2);
+  builder.setBool(velocity.dataOffset, 0, true);
+  builder.writeFloat64Pointer(velocity.pointerOffset, [20, 0, 0]);
+  const angularVelocity = builder.writeStructPointer(liveLocation.pointerOffset + 12 * 8, 1, 2);
+  builder.setBool(angularVelocity.dataOffset, 0, true);
+  builder.writeFloat64Pointer(angularVelocity.pointerOffset, [0, 0, 0.006]);
+  return builder.finish();
+}
+
+function livePoseMessage(): Uint8Array {
+  const builder = new SegmentBuilder(1024);
+  const event = builder.initEvent(127);
+  const livePose = builder.writeStructPointer(event.pointerOffset, 2, 4);
+  const velocity = builder.writeStructPointer(livePose.pointerOffset + 1 * 8, 4, 0);
+  builder.view.setFloat32(velocity.dataOffset, 20, true);
+  builder.view.setFloat32(velocity.dataOffset + 4, 0, true);
+  builder.view.setFloat32(velocity.dataOffset + 8, 0, true);
+  builder.setBool(velocity.dataOffset, 192, true);
+  const angularVelocity = builder.writeStructPointer(livePose.pointerOffset + 3 * 8, 4, 0);
+  builder.view.setFloat32(angularVelocity.dataOffset, 0, true);
+  builder.view.setFloat32(angularVelocity.dataOffset + 4, 0, true);
+  builder.view.setFloat32(angularVelocity.dataOffset + 8, 0.007, true);
+  builder.setBool(angularVelocity.dataOffset, 192, true);
+  return builder.finish();
+}
+
 class SegmentBuilder {
   readonly bytes: Uint8Array;
   readonly view: DataView;
@@ -175,6 +244,18 @@ class SegmentBuilder {
     const dataStart = this.allocateBytes(value.length);
     this.bytes.set(value, dataStart);
     this.writeListPointer(pointerOffset, dataStart, 2, value.length);
+  }
+
+  writeFloat32Pointer(pointerOffset: number, values: number[]): void {
+    const dataStart = this.allocateBytes(values.length * 4);
+    values.forEach((value, index) => this.view.setFloat32(dataStart + index * 4, value, true));
+    this.writeListPointer(pointerOffset, dataStart, 4, values.length);
+  }
+
+  writeFloat64Pointer(pointerOffset: number, values: number[]): void {
+    const dataStart = this.allocateBytes(values.length * 8);
+    values.forEach((value, index) => this.view.setFloat64(dataStart + index * 8, value, true));
+    this.writeListPointer(pointerOffset, dataStart, 5, values.length);
   }
 
   writeListPointer(pointerOffset: number, dataStart: number, elementSize: number, elementCount: number): void {
