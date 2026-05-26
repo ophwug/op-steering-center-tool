@@ -420,9 +420,10 @@ function renderSignalAvailability(result: SteeringCenterDiagnosticResult): strin
     availability.controlsStateMessages +
     availability.lateralPlanMessages +
     availability.liveLocationKalmanMessages +
-    availability.livePoseMessages;
+    availability.livePoseMessages +
+    availability.modelV2Messages;
   if (contextMessages === 0) return "carState only";
-  return `${formatPercent(contextCoverage)} samples aligned; controls ${availability.controlsStateMessages.toLocaleString()}, planner ${availability.lateralPlanMessages.toLocaleString()}, location ${availability.liveLocationKalmanMessages.toLocaleString()}, pose ${availability.livePoseMessages.toLocaleString()}`;
+  return `${formatPercent(contextCoverage)} samples aligned; controls ${availability.controlsStateMessages.toLocaleString()}, planner ${availability.lateralPlanMessages.toLocaleString()}, model ${availability.modelV2Messages.toLocaleString()}, location ${availability.liveLocationKalmanMessages.toLocaleString()}, pose ${availability.livePoseMessages.toLocaleString()}`;
 }
 
 function renderCandidateSegments(result: SteeringCenterDiagnosticResult): string {

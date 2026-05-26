@@ -60,6 +60,7 @@ describe("Cap'n Proto log parsing", () => {
         lateralPlanMessage(),
         liveLocationKalmanMessage(),
         livePoseMessage(),
+        modelV2Message(),
       ]),
     );
 
@@ -72,6 +73,7 @@ describe("Cap'n Proto log parsing", () => {
     expect(context.liveLocationKalman[0].yawRateCalibrated).toBeCloseTo(0.006);
     expect(context.livePose[0].speedDevice).toBeCloseTo(20);
     expect(context.livePose[0].yawRateDevice).toBeCloseTo(0.007);
+    expect(context.modelV2[0].desiredCurvature).toBeCloseTo(0.0006);
   });
 });
 
@@ -205,6 +207,15 @@ function livePoseMessage(): Uint8Array {
   builder.view.setFloat32(angularVelocity.dataOffset + 4, 0, true);
   builder.view.setFloat32(angularVelocity.dataOffset + 8, 0.007, true);
   builder.setBool(angularVelocity.dataOffset, 192, true);
+  return builder.finish();
+}
+
+function modelV2Message(): Uint8Array {
+  const builder = new SegmentBuilder(1024);
+  const event = builder.initEvent(73);
+  const modelV2 = builder.writeStructPointer(event.pointerOffset, 3, 17);
+  const action = builder.writeStructPointer(modelV2.pointerOffset + 16 * 8, 2, 0);
+  builder.view.setFloat32(action.dataOffset, 0.0006, true);
   return builder.finish();
 }
 

@@ -26,6 +26,7 @@ vi.mock("./capnp", () => ({
     lateralPlan: [],
     liveLocationKalman: [],
     livePose: [],
+    modelV2: [],
   })),
   findCalibrationMessages: vi.fn(() => [
     {
@@ -287,6 +288,7 @@ describe("full route scan", () => {
       lateralPlan: [],
       liveLocationKalman: [],
       livePose: [],
+      modelV2: [],
     });
     vi.mocked(findCarStateMessages).mockImplementation(() =>
       Array.from({ length: 80 }, (_, index) => ({

@@ -11,6 +11,7 @@ import {
   LIVE_CALIBRATION_UNION_TAG,
   LIVE_LOCATION_KALMAN_DEPRECATED_UNION_TAG,
   LIVE_POSE_UNION_TAG,
+  MODEL_V2_UNION_TAG,
   ONROAD_EVENTS_UNION_TAG,
 } from "./constants";
 
@@ -125,11 +126,17 @@ export interface LivePoseMessage {
   yawRateDevice: number | null;
 }
 
+export interface ModelV2Message {
+  logMonoTime: bigint;
+  desiredCurvature: number | null;
+}
+
 export interface SteeringContextMessages {
   controlsState: ControlsStateMessage[];
   lateralPlan: LateralPlanMessage[];
   liveLocationKalman: LiveLocationKalmanMessage[];
   livePose: LivePoseMessage[];
+  modelV2: ModelV2Message[];
 }
 
 export interface FingerprintLogMessages {
@@ -282,6 +289,14 @@ const LIVE_POSE_XYZ_FIELDS = {
   y: 1,
   z: 2,
   validBool: 192,
+} as const;
+
+const MODEL_V2_POINTER_FIELDS = {
+  action: 16,
+} as const;
+
+const MODEL_V2_ACTION_DATA_FIELDS = {
+  desiredCurvature: 0,
 } as const;
 
 const ECU_NAMES: Record<number, string> = {
@@ -444,6 +459,7 @@ export function findSteeringContextMessages(bytes: Uint8Array): SteeringContextM
     lateralPlan: [],
     liveLocationKalman: [],
     livePose: [],
+    modelV2: [],
   };
 
   for (const segments of readMessages(bytes)) {
@@ -470,6 +486,11 @@ export function findSteeringContextMessages(bytes: Uint8Array): SteeringContextM
     if (unionTag === LIVE_POSE_UNION_TAG) {
       const message = readLivePoseMessageFromRoot(root, segments);
       if (message) messages.livePose.push(message);
+      continue;
+    }
+    if (unionTag === MODEL_V2_UNION_TAG) {
+      const message = readModelV2MessageFromRoot(root, segments);
+      if (message) messages.modelV2.push(message);
     }
   }
 
@@ -644,6 +665,19 @@ function readLivePoseMessageFromRoot(root: StructRef & { segmentIndex: number },
     logMonoTime: getBigUint64(root, 0),
     speedDevice: vectorMagnitude(velocity),
     yawRateDevice: angularVelocity?.z ?? null,
+  };
+}
+
+function readModelV2MessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): ModelV2Message | null {
+  const modelV2 = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!modelV2) return null;
+  const action =
+    modelV2.pointerCount > MODEL_V2_POINTER_FIELDS.action
+      ? readStructPointer([modelV2.segment], 0, pointerFieldOffset(modelV2, MODEL_V2_POINTER_FIELDS.action))
+      : null;
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    desiredCurvature: action ? getFloat32ByIndex(action, MODEL_V2_ACTION_DATA_FIELDS.desiredCurvature) : null,
   };
 }
 
