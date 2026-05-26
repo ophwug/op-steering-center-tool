@@ -195,7 +195,13 @@ type SteeringSegmentWorkResult =
   | { ok: false; work: SteeringSegmentWork; error: unknown };
 
 export type SteeringConfidence = "high" | "medium" | "low" | "none";
-export type SteeringDiagnosticClassificationKind = "likely-normal" | "bias-candidate" | "route-sensitive" | "inconclusive";
+export type SteeringDiagnosticClassificationKind =
+  | "likely-normal"
+  | "steering-center-or-sensor-bias"
+  | "alignment-pull-candidate"
+  | "route-road-bias"
+  | "inconclusive";
+export type SteeringSensitivityKind = "speed" | "curvature" | "segment";
 
 export interface SteeringWindowFilters {
   maxSegmentsToScan: number;
@@ -255,6 +261,7 @@ export interface SteeringWindowSummary {
   medianContextYawRateRadPerSec: number | null;
   medianContextCurvature: number | null;
   contextSignalCoveragePct: number;
+  estimateWeight: number;
   maxAngleRangeDeg: number;
   supportingSamples: SteeringSampleSummary[];
 }
@@ -286,6 +293,35 @@ export interface SteeringDiagnosticClassification {
   windowMedianSpreadDeg: number | null;
 }
 
+export interface SteeringEstimateStats {
+  weightedMedianSteeringAngleDeg: number | null;
+  sampleMedianSteeringAngleDeg: number | null;
+  confidenceInterval95LowerDeg: number | null;
+  confidenceInterval95UpperDeg: number | null;
+  windowMedianMadDeg: number | null;
+  totalWindowWeight: number;
+}
+
+export interface SteeringSensitivityBucket {
+  kind: SteeringSensitivityKind;
+  label: string;
+  windowCount: number;
+  sampleCount: number;
+  durationSec: number;
+  medianSteeringAngleDeg: number | null;
+  p10SteeringAngleDeg: number | null;
+  p90SteeringAngleDeg: number | null;
+  medianSpeedMps: number | null;
+  medianContextCurvature: number | null;
+}
+
+export interface SteeringSensitivityReport {
+  speedBuckets: SteeringSensitivityBucket[];
+  curvatureBuckets: SteeringSensitivityBucket[];
+  segmentBuckets: SteeringSensitivityBucket[];
+  maxBucketMedianDeltaDeg: number | null;
+}
+
 export interface SteeringCenterDiagnosticResult {
   routeName: string;
   routeInfo: RouteInfo | null;
@@ -303,6 +339,8 @@ export interface SteeringCenterDiagnosticResult {
   resultType: "estimated" | "no-stable-window" | "incomplete";
   medianSteeringAngleDeg: number | null;
   medianAbsoluteDeviationDeg: number | null;
+  estimateStats: SteeringEstimateStats;
+  sensitivity: SteeringSensitivityReport;
   filters: SteeringWindowFilters;
   candidateSegments: SteeringCandidateSegmentSummary[];
   stableWindows: SteeringWindowSummary[];
@@ -1038,14 +1076,17 @@ function buildSteeringCenterResult(
   const stableWindows = findStableSteeringWindows(samples, filters);
   const stableSamples = samplesInsideWindows(samples, stableWindows);
   const angles = stableSamples.map((sample) => sample.steeringAngleDeg);
-  const medianSteeringAngleDeg = median(angles);
+  const sampleMedianSteeringAngleDeg = median(angles);
+  const estimateStats = buildSteeringEstimateStats(stableWindows, sampleMedianSteeringAngleDeg);
+  const medianSteeringAngleDeg = estimateStats.weightedMedianSteeringAngleDeg;
   const medianAbsoluteDeviationDeg =
     medianSteeringAngleDeg === null ? null : median(angles.map((angle) => Math.abs(angle - medianSteeringAngleDeg)));
   const stableDurationSec = sumWindowDuration(stableWindows);
   const qualifyingSampleCount = samples.filter((sample) => isQualifyingSteeringSample(sample, filters)).length;
   const signalAvailability = steeringSignalAvailability(samples, signalMessageCounts);
   const confidence = steeringConfidence(stableWindows, stableSamples.length, stableDurationSec, medianAbsoluteDeviationDeg, filters);
-  const classification = classifySteeringDiagnostic(stableWindows, medianSteeringAngleDeg, medianAbsoluteDeviationDeg, confidence);
+  const sensitivity = buildSteeringSensitivityReport(stableWindows);
+  const classification = classifySteeringDiagnostic(stableWindows, medianSteeringAngleDeg, medianAbsoluteDeviationDeg, confidence, sensitivity);
   const caveats = steeringCaveats({
     confidence,
     decodedSegments,
@@ -1074,6 +1115,8 @@ function buildSteeringCenterResult(
     resultType: confidence === "none" ? (readFailures.length > 0 ? "incomplete" : "no-stable-window") : "estimated",
     medianSteeringAngleDeg,
     medianAbsoluteDeviationDeg,
+    estimateStats,
+    sensitivity,
     filters,
     candidateSegments,
     stableWindows,
@@ -1162,9 +1205,22 @@ function summarizeSteeringWindow(samples: SteeringSample[]): SteeringWindowSumma
     medianContextYawRateRadPerSec: median(contextYawRates),
     medianContextCurvature: median(contextCurvatures),
     contextSignalCoveragePct: samples.length === 0 ? 0 : contextSamples.length / samples.length,
+    estimateWeight: steeringWindowEstimateWeight(samples),
     maxAngleRangeDeg: angleRange(samples),
     supportingSamples,
   };
+}
+
+function steeringWindowEstimateWeight(samples: SteeringSample[]): number {
+  const first = samples[0];
+  const last = samples.at(-1) ?? first;
+  const durationSec = secondsBetween(first.logMonoTime, last.logMonoTime);
+  const score = median(samples.map((sample) => sample.straightnessScore)) ?? 0;
+  const contextCoverage =
+    samples.length === 0
+      ? 0
+      : samples.filter((sample) => sample.contextYawRateRadPerSec !== null || sample.contextCurvature !== null).length / samples.length;
+  return Math.max(0.001, durationSec * Math.max(0.25, score) * (0.6 + contextCoverage * 0.4));
 }
 
 function toPublicSteeringSample(sample: SteeringSample): SteeringSampleSummary {
@@ -1298,6 +1354,114 @@ function samplesInsideWindows(samples: SteeringSample[], windows: SteeringWindow
   );
 }
 
+function buildSteeringEstimateStats(windows: SteeringWindowSummary[], sampleMedianSteeringAngleDeg: number | null): SteeringEstimateStats {
+  const weightedMedianSteeringAngleDeg = weightedMedian(
+    windows.map((window) => ({ value: window.medianSteeringAngleDeg, weight: window.estimateWeight })),
+  );
+  const windowMedianMadDeg =
+    weightedMedianSteeringAngleDeg === null
+      ? null
+      : weightedMedian(windows.map((window) => ({ value: Math.abs(window.medianSteeringAngleDeg - weightedMedianSteeringAngleDeg), weight: window.estimateWeight })));
+  const interval = bootstrapWeightedMedianInterval(windows);
+  return {
+    weightedMedianSteeringAngleDeg,
+    sampleMedianSteeringAngleDeg,
+    confidenceInterval95LowerDeg: interval?.lower ?? null,
+    confidenceInterval95UpperDeg: interval?.upper ?? null,
+    windowMedianMadDeg,
+    totalWindowWeight: windows.reduce((sum, window) => sum + window.estimateWeight, 0),
+  };
+}
+
+function bootstrapWeightedMedianInterval(windows: SteeringWindowSummary[]): { lower: number; upper: number } | null {
+  if (windows.length < 2) return null;
+  const weights = windows.map((window) => Math.max(0.001, window.estimateWeight));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) return null;
+
+  const seedBase =
+    windows.reduce((seed, window) => seed + Math.round((window.medianSteeringAngleDeg + 100) * 1000) + window.sampleCount, 0) || 1;
+  let seed = seedBase >>> 0;
+  const estimates: number[] = [];
+  for (let iteration = 0; iteration < 400; iteration += 1) {
+    const resampled: Array<{ value: number; weight: number }> = [];
+    for (let draw = 0; draw < windows.length; draw += 1) {
+      seed = (1664525 * seed + 1013904223) >>> 0;
+      const target = (seed / 0x100000000) * totalWeight;
+      let cumulative = 0;
+      const index = weights.findIndex((weight) => {
+        cumulative += weight;
+        return cumulative >= target;
+      });
+      const window = windows[index === -1 ? windows.length - 1 : index];
+      resampled.push({ value: window.medianSteeringAngleDeg, weight: window.estimateWeight });
+    }
+    const estimate = weightedMedian(resampled);
+    if (estimate !== null) estimates.push(estimate);
+  }
+
+  const lower = percentile(estimates, 0.025);
+  const upper = percentile(estimates, 0.975);
+  return lower === null || upper === null ? null : { lower, upper };
+}
+
+function buildSteeringSensitivityReport(windows: SteeringWindowSummary[]): SteeringSensitivityReport {
+  const speedBuckets = [
+    summarizeSensitivityBucket("speed", "8-15 m/s", windows.filter((window) => window.medianSpeedMps < 15)),
+    summarizeSensitivityBucket("speed", "15-25 m/s", windows.filter((window) => window.medianSpeedMps >= 15 && window.medianSpeedMps < 25)),
+    summarizeSensitivityBucket("speed", "25+ m/s", windows.filter((window) => window.medianSpeedMps >= 25)),
+  ].filter((bucket) => bucket.windowCount > 0);
+
+  const curvatureBuckets = [
+    summarizeSensitivityBucket("curvature", "left curve", windows.filter((window) => (window.medianContextCurvature ?? 0) < -0.0001)),
+    summarizeSensitivityBucket(
+      "curvature",
+      "near-zero curve",
+      windows.filter((window) => window.medianContextCurvature === null || Math.abs(window.medianContextCurvature) <= 0.0001),
+    ),
+    summarizeSensitivityBucket("curvature", "right curve", windows.filter((window) => (window.medianContextCurvature ?? 0) > 0.0001)),
+  ].filter((bucket) => bucket.windowCount > 0);
+
+  const segmentBuckets = [...new Set(windows.map((window) => window.segmentStart))]
+    .sort((a, b) => a - b)
+    .slice(0, 12)
+    .map((segment) => summarizeSensitivityBucket("segment", `segment ${segment}`, windows.filter((window) => window.segmentStart === segment)))
+    .filter((bucket) => bucket.windowCount > 0);
+
+  return {
+    speedBuckets,
+    curvatureBuckets,
+    segmentBuckets,
+    maxBucketMedianDeltaDeg: maxSensitivityDelta([...speedBuckets, ...curvatureBuckets, ...segmentBuckets]),
+  };
+}
+
+function summarizeSensitivityBucket(kind: SteeringSensitivityKind, label: string, windows: SteeringWindowSummary[]): SteeringSensitivityBucket {
+  const weightedAngles = windows.map((window) => ({ value: window.medianSteeringAngleDeg, weight: window.estimateWeight }));
+  return {
+    kind,
+    label,
+    windowCount: windows.length,
+    sampleCount: windows.reduce((sum, window) => sum + window.sampleCount, 0),
+    durationSec: windows.reduce((sum, window) => sum + window.durationSec, 0),
+    medianSteeringAngleDeg: weightedMedian(weightedAngles),
+    p10SteeringAngleDeg: weightedPercentile(weightedAngles, 0.1),
+    p90SteeringAngleDeg: weightedPercentile(weightedAngles, 0.9),
+    medianSpeedMps: weightedMedian(windows.map((window) => ({ value: window.medianSpeedMps, weight: window.estimateWeight }))),
+    medianContextCurvature: weightedMedian(
+      windows
+        .filter((window) => window.medianContextCurvature !== null)
+        .map((window) => ({ value: window.medianContextCurvature ?? 0, weight: window.estimateWeight })),
+    ),
+  };
+}
+
+function maxSensitivityDelta(buckets: SteeringSensitivityBucket[]): number | null {
+  const medians = buckets.map((bucket) => bucket.medianSteeringAngleDeg).filter((value): value is number => value !== null);
+  if (medians.length < 2) return null;
+  return Math.max(...medians) - Math.min(...medians);
+}
+
 function steeringConfidence(
   windows: SteeringWindowSummary[],
   stableSampleCount: number,
@@ -1329,6 +1493,7 @@ function classifySteeringDiagnostic(
   medianSteeringAngleDeg: number | null,
   medianAbsoluteDeviationDeg: number | null,
   confidence: SteeringConfidence,
+  sensitivity: SteeringSensitivityReport,
 ): SteeringDiagnosticClassification {
   const windowMedians = windows.map((window) => window.medianSteeringAngleDeg).filter(Number.isFinite);
   const absMedian = Math.abs(medianSteeringAngleDeg ?? 0);
@@ -1371,18 +1536,34 @@ function classifySteeringDiagnostic(
     };
   }
 
-  if (absMedian >= 1.25 && signConsistencyPct >= 0.75 && (medianAbsoluteDeviationDeg ?? Infinity) <= 1.5) {
+  const speedDelta = maxSensitivityDelta(sensitivity.speedBuckets);
+  const curvatureDelta = maxSensitivityDelta(sensitivity.curvatureBuckets);
+  const segmentDelta = maxSensitivityDelta(sensitivity.segmentBuckets);
+  const sensitivityDelta = Math.max(speedDelta ?? 0, curvatureDelta ?? 0, segmentDelta ?? 0);
+
+  if (absMedian >= 1.25 && signConsistencyPct >= 0.75 && (medianAbsoluteDeviationDeg ?? Infinity) <= 1.5 && sensitivityDelta <= 1.25) {
     return {
-      kind: "bias-candidate",
-      label: "Persistent steering bias candidate",
+      kind: "steering-center-or-sensor-bias",
+      label: "Steering center or sensor bias candidate",
       explanation: "Most accepted windows lean the same direction, which is useful evidence for steering center or sensor-offset review.",
       signConsistencyPct,
       windowMedianSpreadDeg,
     };
   }
 
+  if (absMedian >= 1.25 && signConsistencyPct >= 0.65 && sensitivityDelta > 1.25) {
+    return {
+      kind: "alignment-pull-candidate",
+      label: "Alignment or pull candidate",
+      explanation:
+        "The route shows a same-direction steering offset, but the size changes across speed, curvature, or segment buckets. That pattern can fit road load, tire pressure, wind, or alignment pull more than a pure steering sensor offset.",
+      signConsistencyPct,
+      windowMedianSpreadDeg,
+    };
+  }
+
   return {
-    kind: "route-sensitive",
+    kind: "route-road-bias",
     label: "Route or road sensitive",
     explanation: "The accepted windows do not cluster tightly enough to separate vehicle bias from road crown, wind, or route curvature.",
     signConsistencyPct,
@@ -1481,6 +1662,25 @@ function percentile(values: number[], p: number): number | null {
   if (lower === upper) return sorted[lower];
   const weight = position - lower;
   return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+}
+
+function weightedMedian(values: Array<{ value: number; weight: number }>): number | null {
+  return weightedPercentile(values, 0.5);
+}
+
+function weightedPercentile(values: Array<{ value: number; weight: number }>, p: number): number | null {
+  const sorted = values
+    .filter((item) => Number.isFinite(item.value) && Number.isFinite(item.weight) && item.weight > 0)
+    .sort((a, b) => a.value - b.value);
+  const totalWeight = sorted.reduce((sum, item) => sum + item.weight, 0);
+  if (sorted.length === 0 || totalWeight <= 0) return null;
+  const target = totalWeight * p;
+  let cumulative = 0;
+  for (const item of sorted) {
+    cumulative += item.weight;
+    if (cumulative >= target) return item.value;
+  }
+  return sorted.at(-1)?.value ?? null;
 }
 
 function medianFinite(values: Array<number | null | undefined>): number | null {

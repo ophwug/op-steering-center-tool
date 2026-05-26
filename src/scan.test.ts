@@ -309,6 +309,10 @@ describe("full route scan", () => {
     expect(result.resultType).toBe("estimated");
     expect(result.confidence).not.toBe("none");
     expect(result.medianSteeringAngleDeg).toBeCloseTo(1.5);
+    expect(result.estimateStats.sampleMedianSteeringAngleDeg).toBeCloseTo(1.5);
+    expect(result.estimateStats.weightedMedianSteeringAngleDeg).toBeCloseTo(1.5);
+    expect(result.sensitivity.speedBuckets.length).toBeGreaterThan(0);
+    expect(result.classification.label.length).toBeGreaterThan(0);
     expect(result.stableWindows.length).toBeGreaterThan(0);
     expect(result.filters.minSpeedMps).toBe(8);
     expect(result.signalAvailability.samplesWithAnyContext).toBe(0);

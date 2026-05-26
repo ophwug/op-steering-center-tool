@@ -247,9 +247,11 @@ function renderResult(result: SteeringCenterDiagnosticResult): void {
       <div><dt>Context signals</dt><dd>${renderSignalAvailability(result)}</dd></div>
       <div><dt>Stable windows</dt><dd>${result.stableWindows.length} window(s), ${formatDuration(result.stableDurationSec)} total</dd></div>
       <div><dt>Spread</dt><dd>${result.medianAbsoluteDeviationDeg === null ? "n/a" : `${formatDeg(result.medianAbsoluteDeviationDeg)} median absolute deviation`}</dd></div>
+      <div><dt>95% interval</dt><dd>${renderEstimateInterval(result)}</dd></div>
     </dl>
     ${result.readFailures.length > 0 ? renderReadFailures(result) : ""}
     ${renderCaveats(result)}
+    ${renderSensitivity(result)}
     ${renderStableWindows(result)}
     ${renderCandidateSegments(result)}
     ${renderFilters(result.filters)}
@@ -271,6 +273,14 @@ function renderClassification(result: SteeringCenterDiagnosticResult): string {
   return `${escapeHtml(classification.label)} (${formatPercent(classification.signConsistencyPct)} sign consistency, ${spread})`;
 }
 
+function renderEstimateInterval(result: SteeringCenterDiagnosticResult): string {
+  const stats = result.estimateStats;
+  if (stats.confidenceInterval95LowerDeg === null || stats.confidenceInterval95UpperDeg === null) return "n/a";
+  const sampleMedian =
+    stats.sampleMedianSteeringAngleDeg === null ? "" : `; sample median ${formatDeg(stats.sampleMedianSteeringAngleDeg)}`;
+  return `${formatDeg(stats.confidenceInterval95LowerDeg)} to ${formatDeg(stats.confidenceInterval95UpperDeg)} window bootstrap${sampleMedian}`;
+}
+
 function renderCaveats(result: SteeringCenterDiagnosticResult): string {
   return `
     <section class="report-section">
@@ -280,6 +290,62 @@ function renderCaveats(result: SteeringCenterDiagnosticResult): string {
         ${result.caveats.map((caveat) => `<li>${escapeHtml(caveat)}</li>`).join("")}
       </ul>
     </section>
+  `;
+}
+
+function renderSensitivity(result: SteeringCenterDiagnosticResult): string {
+  const sections = [
+    ["Speed sensitivity", result.sensitivity.speedBuckets],
+    ["Curvature sensitivity", result.sensitivity.curvatureBuckets],
+    ["Segment sensitivity", result.sensitivity.segmentBuckets],
+  ] as const;
+  const hasRows = sections.some(([, rows]) => rows.length > 0);
+  return `
+    <section class="report-section">
+      <h3>Sensitivity</h3>
+      ${
+        hasRows
+          ? sections
+              .filter(([, rows]) => rows.length > 0)
+              .map(
+                ([title, rows]) => `
+                  <h4>${title}</h4>
+                  <div class="table-wrap">
+                    <table class="candidate-table">
+                      <thead>
+                        <tr>
+                          <th>Bucket</th>
+                          <th>Windows</th>
+                          <th>Duration</th>
+                          <th>Median angle</th>
+                          <th>P10 / P90</th>
+                          <th>Median speed</th>
+                          <th>Curvature</th>
+                        </tr>
+                      </thead>
+                      <tbody>${rows.map(renderSensitivityRow).join("")}</tbody>
+                    </table>
+                  </div>
+                `,
+              )
+              .join("")
+          : `<p class="muted section-note">No sensitivity buckets were available.</p>`
+      }
+    </section>
+  `;
+}
+
+function renderSensitivityRow(row: SteeringCenterDiagnosticResult["sensitivity"]["speedBuckets"][number]): string {
+  return `
+    <tr>
+      <td>${escapeHtml(row.label)}</td>
+      <td>${row.windowCount.toLocaleString()} / ${row.sampleCount.toLocaleString()} samples</td>
+      <td>${formatDuration(row.durationSec)}</td>
+      <td>${formatNullableDeg(row.medianSteeringAngleDeg)}</td>
+      <td>${formatNullableDeg(row.p10SteeringAngleDeg)} / ${formatNullableDeg(row.p90SteeringAngleDeg)}</td>
+      <td>${row.medianSpeedMps === null ? "n/a" : formatSpeed(row.medianSpeedMps)}</td>
+      <td>${row.medianContextCurvature === null ? "n/a" : formatCurvature(row.medianContextCurvature)}</td>
+    </tr>
   `;
 }
 
@@ -461,6 +527,10 @@ function logFileKind(source: SteeringCenterDiagnosticResult["logSource"]): "qlog
 
 function formatDeg(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}°`;
+}
+
+function formatNullableDeg(value: number | null): string {
+  return value === null ? "n/a" : formatDeg(value);
 }
 
 function formatDuration(seconds: number): string {

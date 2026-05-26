@@ -16,8 +16,9 @@ just enough Cap'n Proto to summarize:
 - stable straight-driving windows that pass speed-aware yaw-rate, curvature,
   steering-rate, blinker, standstill, driver-steering, sample-gap, duration,
   and angle-range filters
-- the median steeringAngleDeg across accepted windows, plus confidence, spread,
-  signal coverage, caveats, and supporting sample log times
+- a window-weighted median steeringAngleDeg estimate, bootstrap interval,
+  confidence, spread, speed/curvature/segment sensitivity, signal coverage,
+  caveats, and supporting sample log times
 
 The result is meant to package route evidence for human review when a vehicle
 appears to need steering wheel centering or steering sensor offset diagnosis. It
