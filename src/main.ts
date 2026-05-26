@@ -12,6 +12,7 @@ import {
   type SteeringSampleSummary,
   type SteeringWindowFilters,
 } from "./scan";
+import { buildRouteShareUrl, parseRouteInput, routeInputFromUrl } from "./routeInput";
 
 const DEMO_ROUTES = [
   {
@@ -46,6 +47,7 @@ app.innerHTML = `
         <input id="route-input" name="route" autocomplete="off" spellcheck="false"
           placeholder="Paste Connect URL here, e.g. https://connect.comma.ai/<dongle>/<route>" />
         <button class="scan-button" type="submit">Scan route</button>
+        <button class="secondary share-button" id="share-button" type="button" disabled>Share</button>
       </div>
       <p class="form-hint">Requires uploaded rlogs, ranks candidates with qlogs when available, then estimates median steeringAngleDeg from speed-aware straight-driving windows.</p>
       <div class="demo-row">
@@ -92,6 +94,7 @@ app.innerHTML = `
 const form = document.querySelector<HTMLFormElement>("#reader-form")!;
 const input = document.querySelector<HTMLInputElement>("#route-input")!;
 const scanButton = document.querySelector<HTMLButtonElement>(".scan-button")!;
+const shareButton = document.querySelector<HTMLButtonElement>("#share-button")!;
 const demoSelect = document.querySelector<HTMLSelectElement>("#demo-route-select")!;
 const demoButton = document.querySelector<HTMLButtonElement>("#demo-button")!;
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text")!;
@@ -100,11 +103,16 @@ const resultPanel = document.querySelector<HTMLElement>("#result-panel")!;
 const authPanel = document.querySelector<HTMLElement>("#auth-panel")!;
 
 renderAuthPanel();
-void completePendingAuth();
+void initializeFromUrl();
 
 demoButton.addEventListener("click", () => {
   input.value = demoSelect.value;
   input.focus();
+});
+
+shareButton.addEventListener("click", () => {
+  if (!routeInputFromUrl(window.location.href)) return;
+  void copyText(window.location.href).then((copied) => showCopyFeedback(shareButton, copied));
 });
 
 authPanel.addEventListener("click", (event) => {
@@ -134,23 +142,56 @@ resultPanel.addEventListener("click", (event) => {
 
   const value = button.dataset.copy ?? "";
   void copyText(value).then((copied) => {
-    const original = button.textContent ?? "Copy";
-    button.textContent = copied ? "Copied" : "Copy failed";
-    button.disabled = true;
-    window.setTimeout(() => {
-      button.textContent = original;
-      button.disabled = false;
-    }, 1200);
+    showCopyFeedback(button, copied);
   });
 });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  setBusy(true);
+  await submitRoute(input.value, { updateHistory: true });
+});
+
+window.addEventListener("popstate", () => {
+  const routeName = routeInputFromUrl(window.location.href);
+  setShareButtonState();
+  if (!routeName) {
+    input.value = "";
+    clearResult();
+    progressBar.classList.remove("error");
+    progressBar.style.width = "0";
+    statusText.textContent = "Paste a public route to estimate logged steering wheel center.";
+    return;
+  }
+  input.value = routeName;
+  void submitRoute(routeName, { updateHistory: false });
+});
+
+async function submitRoute(routeInput: string, options: { updateHistory: boolean }): Promise<void> {
   clearResult();
 
+  let routeName: string;
   try {
-    const result = await scanRouteForSteeringCenterDiagnostic(input.value, (progress) => {
+    routeName = parseRouteInput(routeInput).routeName;
+  } catch (error) {
+    if (options.updateHistory) {
+      window.history.pushState({}, "", new URL(import.meta.env.BASE_URL, window.location.origin));
+      setShareButtonState();
+    }
+    statusText.textContent = error instanceof Error ? error.message : String(error);
+    progressBar.style.width = "100%";
+    progressBar.classList.add("error");
+    return;
+  }
+
+  input.value = routeName;
+  if (options.updateHistory) {
+    window.history.pushState({}, "", buildRouteShareUrl(window.location.origin, import.meta.env.BASE_URL, routeName));
+    setShareButtonState();
+  }
+
+  setBusy(true);
+  try {
+    const result = await scanRouteForSteeringCenterDiagnostic(routeName, (progress) => {
       statusText.textContent = progress.message;
       if (progress.total && progress.current) {
         progressBar.style.width = `${Math.max(5, (progress.current / progress.total) * 100)}%`;
@@ -166,7 +207,7 @@ form.addEventListener("submit", async (event) => {
   } finally {
     setBusy(false);
   }
-});
+}
 
 function setBusy(busy: boolean): void {
   scanButton.disabled = busy;
@@ -175,6 +216,10 @@ function setBusy(busy: boolean): void {
   input.disabled = busy;
   progressBar.classList.toggle("error", false);
   if (busy) progressBar.style.width = "4%";
+}
+
+function setShareButtonState(): void {
+  shareButton.disabled = !routeInputFromUrl(window.location.href);
 }
 
 function clearResult(): void {
@@ -220,6 +265,15 @@ async function completePendingAuth(): Promise<void> {
     progressBar.classList.remove("error");
     statusText.textContent = "Signed in with comma. Paste a route and scan when ready.";
   }
+}
+
+async function initializeFromUrl(): Promise<void> {
+  await completePendingAuth();
+  const routeName = routeInputFromUrl(window.location.href);
+  setShareButtonState();
+  if (!routeName) return;
+  input.value = routeName;
+  await submitRoute(routeName, { updateHistory: false });
 }
 
 function renderResult(result: SteeringCenterDiagnosticResult): void {
@@ -660,4 +714,15 @@ async function copyText(value: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function showCopyFeedback(button: HTMLButtonElement, copied: boolean): void {
+  const original = button.textContent ?? "Copy";
+  button.textContent = copied ? "Copied" : "Copy failed";
+  button.disabled = true;
+  window.setTimeout(() => {
+    button.textContent = original;
+    button.disabled = false;
+    if (button === shareButton) setShareButtonState();
+  }, 1200);
 }

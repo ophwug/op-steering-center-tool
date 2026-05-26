@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./constants";
+import { buildAuthCallbackCleanUrl } from "./routeInput";
 
 const AUTH_STORAGE_KEY = "ai.comma.api.authorization";
 const LOCAL_OAUTH_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -164,6 +165,5 @@ function oauthUrl(baseUrl: string, params: Record<string, string>): string {
 
 function removeAuthParamsFromUrl(): void {
   const basePath = import.meta.env.BASE_URL;
-  const url = new URL(basePath, window.location.origin);
-  window.history.replaceState({}, "", url);
+  window.history.replaceState({}, "", buildAuthCallbackCleanUrl(window.location.href, basePath));
 }

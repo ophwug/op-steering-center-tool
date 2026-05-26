@@ -1,12 +1,6 @@
 import { API_BASE_URL } from "./constants";
 import { authHeaders, isSignedIn } from "./auth";
-
-export interface ParsedRouteInput {
-  routeName: string;
-  dongleId: string;
-  routeId: string;
-  source: "route" | "connect-url";
-}
+export { parseRouteInput, type ParsedRouteInput } from "./routeInput";
 
 export interface RouteFiles {
   cameras?: string[];
@@ -31,39 +25,6 @@ export interface RouteInfo {
   gitCommit?: string;
   git_branch?: string;
   gitBranch?: string;
-}
-
-export function parseRouteInput(input: string): ParsedRouteInput {
-  const trimmed = input.trim();
-  if (!trimmed) throw new Error("Paste a public comma Connect URL or route name first.");
-
-  if (trimmed.startsWith("https://connect.comma.ai/")) {
-    const url = new URL(trimmed);
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (parts.length < 2) {
-      throw new Error("Connect URLs need at least /<dongle>/<route> in the path.");
-    }
-    const [dongleId, routeId] = parts;
-    return {
-      routeName: `${dongleId}|${routeId}`,
-      dongleId,
-      routeId,
-      source: "connect-url",
-    };
-  }
-
-  const routeName = trimmed.replace("/", "|");
-  const [dongleId, routeId] = routeName.split("|");
-  if (!dongleId || !routeId) {
-    throw new Error("Route names should look like dongle_id|route_id.");
-  }
-
-  return {
-    routeName,
-    dongleId,
-    routeId,
-    source: "route",
-  };
 }
 
 export async function fetchRouteFiles(routeName: string): Promise<RouteFiles> {
