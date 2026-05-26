@@ -283,6 +283,22 @@ describe("full route scan", () => {
         gitSrcCommit: "",
       },
       deviceType: "mici",
+      carParams: [
+        {
+          logMonoTime: 2n,
+          brand: "toyota",
+          carFingerprint: "TOYOTA COROLLA TSS2 2020",
+          fuzzyFingerprint: false,
+          notCar: false,
+          carVin: "JTDEPRAE0LJ000001",
+          dashcamOnly: false,
+          passive: false,
+          openpilotLongitudinalControl: false,
+          fingerprintSource: 1,
+          fingerprintSourceName: "fw",
+          carFw: [],
+        },
+      ],
     });
     vi.mocked(findSteeringContextMessages).mockReturnValue({
       controlsState: [],
@@ -313,6 +329,8 @@ describe("full route scan", () => {
     expect(result.resultType).toBe("estimated");
     expect(result.confidence).not.toBe("none");
     expect(result.medianSteeringAngleDeg).toBeCloseTo(1.5);
+    expect(result.carParams?.carFingerprint).toBe("TOYOTA COROLLA TSS2 2020");
+    expect(result.carParams?.carVin?.redacted).toBe("JTD***********001");
     expect(result.estimateStats.sampleMedianSteeringAngleDeg).toBeCloseTo(1.5);
     expect(result.estimateStats.weightedMedianSteeringAngleDeg).toBeCloseTo(1.5);
     expect(result.sensitivity.speedBuckets.length).toBeGreaterThan(0);

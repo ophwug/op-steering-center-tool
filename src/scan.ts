@@ -182,6 +182,7 @@ interface FingerprintSegmentScan {
 interface SteeringSegmentScan {
   initData: InitDataMessage | null;
   deviceType: DeviceType | null;
+  carParams: CarParamsMessage[];
   carStates: CarStateMessage[];
   context: SteeringContextMessages;
 }
@@ -330,6 +331,7 @@ export interface SteeringCenterDiagnosticResult {
   routeName: string;
   routeInfo: RouteInfo | null;
   initData: InitDataMessage | null;
+  carParams: CarParamsSummary | null;
   logSource: "qlogs" | "rlogs";
   readFailures: LogReadFailure[];
   scannedSegments: number;
@@ -605,6 +607,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
   const readFailures: LogReadFailure[] = [];
   const samples: SteeringSample[] = [];
   let initData: InitDataMessage | null = null;
+  const carParams: CarParamsSummary[] = [];
   let decodedSegments = 0;
   let totalCarStateMessages = 0;
   const signalMessageCounts = {
@@ -659,6 +662,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
       signalMessageCounts.livePoseMessages += segmentScan.context.livePose.length;
       signalMessageCounts.modelV2Messages += segmentScan.context.modelV2.length;
       initData ??= segmentScan.initData;
+      carParams.push(...segmentScan.carParams.map((message) => summarizeCarParams(message, result.work.logUrl, result.work.segment)));
       context.routeInfo = routeInfoWithDeviceType(context.routeInfo, context.routeName, segmentScan.deviceType);
       samples.push(...summarizeSteeringSegmentSamples(segmentScan, result.work.logUrl, result.work.segment, filters));
     }
@@ -679,6 +683,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
       return buildSteeringCenterResult(
         context,
         initData,
+        carParams.at(-1) ?? null,
         readFailures,
         decodedSegments,
         totalCarStateMessages,
@@ -693,6 +698,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
   const result = buildSteeringCenterResult(
     context,
     initData,
+    carParams.at(-1) ?? null,
     readFailures,
     decodedSegments,
     totalCarStateMessages,
@@ -825,6 +831,7 @@ async function downloadSteeringSegmentScan(
   return {
     initData: fingerprintMessages.initData,
     deviceType: fingerprintMessages.deviceType ?? findDeviceType(decompressed),
+    carParams: fingerprintMessages.carParams,
     carStates: findCarStateMessages(decompressed),
     context: findSteeringContextMessages(decompressed),
   };
@@ -1105,6 +1112,7 @@ function nearestByLogMonoTime<T extends { logMonoTime: bigint }>(items: T[], tar
 function buildSteeringCenterResult(
   context: RouteLogContext,
   initData: InitDataMessage | null,
+  carParams: CarParamsSummary | null,
   readFailures: LogReadFailure[],
   decodedSegments: number,
   totalCarStateMessages: number,
@@ -1142,6 +1150,7 @@ function buildSteeringCenterResult(
     routeName: context.routeName,
     routeInfo: context.routeInfo,
     initData,
+    carParams,
     logSource: context.source,
     readFailures,
     scannedSegments: decodedSegments,

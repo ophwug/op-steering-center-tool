@@ -239,6 +239,7 @@ function renderResult(result: SteeringCenterDiagnosticResult): void {
     </div>
     <dl class="result-list">
       <div><dt>Route</dt><dd><code>${escapeHtml(result.routeName)}</code></dd></div>
+      <div><dt>Vehicle</dt><dd>${renderVehicleSummary(result)}</dd></div>
       <div><dt>Segments</dt><dd>${result.scannedSegments} of ${result.totalSegments} ${logFileKind(result.logSource)} segment(s) decoded</dd></div>
       <div><dt>Device</dt><dd>${escapeHtml(result.routeInfo?.deviceType ?? result.initData?.deviceType ?? "unknown")}</dd></div>
       <div><dt>openpilot</dt><dd>${renderRouteVersion(result)}</dd></div>
@@ -250,6 +251,7 @@ function renderResult(result: SteeringCenterDiagnosticResult): void {
       <div><dt>95% interval</dt><dd>${renderEstimateInterval(result)}</dd></div>
     </dl>
     ${result.readFailures.length > 0 ? renderReadFailures(result) : ""}
+    ${renderVehicleMetadata(result)}
     ${renderCaveats(result)}
     ${renderSensitivity(result)}
     ${renderStableWindows(result)}
@@ -265,6 +267,79 @@ function renderRouteVersion(result: SteeringCenterDiagnosticResult): string {
   const branch = routeInfo?.git_branch || routeInfo?.gitBranch || init?.gitBranch || "";
   const commit = routeInfo?.git_commit || routeInfo?.gitCommit || init?.gitCommit || init?.gitSrcCommit || "";
   return [version, branch, commit ? commit.slice(0, 12) : ""].filter(Boolean).map(escapeHtml).join(" / ") || "unknown";
+}
+
+function renderVehicleSummary(result: SteeringCenterDiagnosticResult): string {
+  const carParams = result.carParams;
+  if (carParams?.carFingerprint) {
+    return escapeHtml([carParams.brand, carParams.carFingerprint].filter(Boolean).join(" / "));
+  }
+  return escapeHtml(result.routeInfo?.platform ?? result.routeInfo?.deviceType ?? result.initData?.deviceType ?? "unknown");
+}
+
+function renderVehicleMetadata(result: SteeringCenterDiagnosticResult): string {
+  const carParams = result.carParams;
+  const [dongleId, routeId] = result.routeName.split("|");
+  const routeInfo = result.routeInfo;
+  const rows = [
+    ["Car fingerprint", carParams?.carFingerprint || routeInfo?.platform || "unknown"],
+    ["Brand", carParams?.brand || "unknown"],
+    ["VIN", carParams?.carVin?.redacted ?? "not decoded"],
+    ["Fingerprint source", carParams ? `${carParams.fingerprintSourceName} (${carParams.fingerprintSource})` : "not decoded"],
+    ["Dongle", routeInfo?.dongle_id || routeInfo?.dongleId || dongleId || "unknown"],
+    ["Route", routeInfo?.fullname || routeId || result.routeName],
+    ["Device", routeInfo?.deviceType ?? result.initData?.deviceType ?? "unknown"],
+    ["Platform", routeInfo?.platform ?? "unknown"],
+    ["openpilot", renderRouteVersion(result)],
+    ["Git remote", result.initData?.gitRemote || "unknown"],
+    ["Longitudinal control", carParams ? formatYesNo(carParams.openpilotLongitudinalControl) : "unknown"],
+    ["Dashcam / passive", carParams ? `${formatYesNo(carParams.dashcamOnly)} / ${formatYesNo(carParams.passive)}` : "unknown"],
+    ["Firmware entries", carParams ? `${carParams.carFw.length.toLocaleString()} decoded` : "not decoded"],
+    ["Log segments used", `${result.scannedSegments} of ${result.totalSegments} rlog segment(s); ${result.candidateSegments.length} qlog candidate(s)`],
+  ];
+  const firmwareRows = carParams?.carFw.slice(0, 8) ?? [];
+  return `
+    <section class="report-section">
+      <h3>Vehicle metadata</h3>
+      <dl class="result-list compact">
+        ${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
+      </dl>
+      ${
+        firmwareRows.length > 0
+          ? `
+            <div class="table-wrap">
+              <table class="candidate-table">
+                <thead>
+                  <tr>
+                    <th>ECU</th>
+                    <th>Address</th>
+                    <th>Sub</th>
+                    <th>FW</th>
+                    <th>Brand</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${firmwareRows
+                    .map(
+                      (fw) => `
+                        <tr>
+                          <td>${escapeHtml(fw.ecuName)}</td>
+                          <td>${escapeHtml(`0x${fw.address.toString(16)}`)}</td>
+                          <td>${fw.subAddress === 0 ? "none" : escapeHtml(String(fw.subAddress))}</td>
+                          <td>${escapeHtml(fw.fwVersionText || fw.fwVersionPython)}</td>
+                          <td>${escapeHtml(fw.brand || "unknown")}</td>
+                        </tr>
+                      `,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+          `
+          : `<p class="muted section-note">No firmware list was decoded from carParams in the scanned rlogs.</p>`
+      }
+    </section>
+  `;
 }
 
 function renderClassification(result: SteeringCenterDiagnosticResult): string {
@@ -545,6 +620,10 @@ function formatSpeed(mps: number): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function formatYesNo(value: boolean): string {
+  return value ? "yes" : "no";
 }
 
 function formatRadPerSec(value: number): string {
