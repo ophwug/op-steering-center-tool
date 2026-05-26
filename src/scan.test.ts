@@ -23,6 +23,7 @@ vi.mock("./capnp", () => ({
   findCarStateMessages: vi.fn(() => []),
   findSteeringContextMessages: vi.fn(() => ({
     controlsState: [],
+    carControl: [],
     lateralPlan: [],
     liveLocationKalman: [],
     livePose: [],
@@ -285,6 +286,7 @@ describe("full route scan", () => {
     });
     vi.mocked(findSteeringContextMessages).mockReturnValue({
       controlsState: [],
+      carControl: [],
       lateralPlan: [],
       liveLocationKalman: [],
       livePose: [],

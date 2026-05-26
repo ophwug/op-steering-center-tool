@@ -5,6 +5,7 @@ import {
   findFingerprintLogMessages,
   findSteeringContextMessages,
   type CalibrationMessage,
+  type CarControlMessage,
   type CarParamsMessage,
   type CarStateMessage,
   type ControlsStateMessage,
@@ -278,6 +279,7 @@ export interface SteeringCandidateSegmentSummary {
 
 export interface SteeringSignalAvailability {
   controlsStateMessages: number;
+  carControlMessages: number;
   lateralPlanMessages: number;
   liveLocationKalmanMessages: number;
   livePoseMessages: number;
@@ -356,6 +358,8 @@ interface SteeringSample extends SteeringSampleSummary {
   rightBlinker: boolean;
   controlsCurvature: number | null;
   desiredCurvature: number | null;
+  carControlCurvature: number | null;
+  carControlCurrentCurvature: number | null;
   lateralPlanCurvature: number | null;
   locationYawRate: number | null;
   locationSpeed: number | null;
@@ -605,6 +609,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
   let totalCarStateMessages = 0;
   const signalMessageCounts = {
     controlsStateMessages: 0,
+    carControlMessages: 0,
     lateralPlanMessages: 0,
     liveLocationKalmanMessages: 0,
     livePoseMessages: 0,
@@ -648,6 +653,7 @@ export async function scanRouteForSteeringCenterDiagnostic(
       decodedSegments += 1;
       totalCarStateMessages += segmentScan.carStates.length;
       signalMessageCounts.controlsStateMessages += segmentScan.context.controlsState.length;
+      signalMessageCounts.carControlMessages += segmentScan.context.carControl.length;
       signalMessageCounts.lateralPlanMessages += segmentScan.context.lateralPlan.length;
       signalMessageCounts.liveLocationKalmanMessages += segmentScan.context.liveLocationKalman.length;
       signalMessageCounts.livePoseMessages += segmentScan.context.livePose.length;
@@ -945,6 +951,7 @@ function previewForSegment(
 
 interface AlignedSteeringContext {
   controlsState: ControlsStateMessage | null;
+  carControl: CarControlMessage | null;
   lateralPlan: LateralPlanMessage | null;
   liveLocationKalman: LiveLocationKalmanMessage | null;
   livePose: LivePoseMessage | null;
@@ -973,6 +980,8 @@ function summarizeSteeringSample(
 ): SteeringSample {
   const controlsCurvature = finiteOrNull(context.controlsState?.curvature);
   const desiredCurvature = finiteOrNull(context.controlsState?.desiredCurvature);
+  const carControlCurvature = finiteOrNull(context.carControl?.actuatorCurvature);
+  const carControlCurrentCurvature = finiteOrNull(context.carControl?.currentCurvature);
   const lateralPlanCurvature = finiteOrNull(context.lateralPlan?.firstCurvature);
   const locationYawRate = finiteOrNull(context.liveLocationKalman?.yawRateCalibrated);
   const locationSpeed = finiteOrNull(context.liveLocationKalman?.speedCalibrated);
@@ -980,14 +989,30 @@ function summarizeSteeringSample(
   const poseSpeed = finiteOrNull(context.livePose?.speedDevice);
   const modelDesiredCurvature = finiteOrNull(context.modelV2?.desiredCurvature);
   const contextYawRateRadPerSec = medianFinite([locationYawRate, poseYawRate]);
-  const contextCurvature = medianFinite([controlsCurvature, desiredCurvature, lateralPlanCurvature, modelDesiredCurvature]);
+  const contextCurvature = medianFinite([
+    controlsCurvature,
+    desiredCurvature,
+    carControlCurvature,
+    carControlCurrentCurvature,
+    lateralPlanCurvature,
+    modelDesiredCurvature,
+  ]);
   const independentYawSignalCount = [locationYawRate, poseYawRate].filter((value) => value !== null).length;
-  const curvatureSignalCount = [controlsCurvature, desiredCurvature, lateralPlanCurvature, modelDesiredCurvature].filter((value) => value !== null).length;
+  const curvatureSignalCount = [
+    controlsCurvature,
+    desiredCurvature,
+    carControlCurvature,
+    carControlCurrentCurvature,
+    lateralPlanCurvature,
+    modelDesiredCurvature,
+  ].filter((value) => value !== null).length;
   const straightnessScore = steeringStraightnessScore(
     {
       ...message,
       controlsCurvature,
       desiredCurvature,
+      carControlCurvature,
+      carControlCurrentCurvature,
       lateralPlanCurvature,
       locationYawRate,
       locationSpeed,
@@ -1020,6 +1045,8 @@ function summarizeSteeringSample(
     rightBlinker: message.rightBlinker,
     controlsCurvature,
     desiredCurvature,
+    carControlCurvature,
+    carControlCurrentCurvature,
     lateralPlanCurvature,
     locationYawRate,
     locationSpeed,
@@ -1034,6 +1061,7 @@ function summarizeSteeringSample(
 function sortedSteeringContext(context: SteeringContextMessages): SteeringContextMessages {
   return {
     controlsState: [...context.controlsState].sort(compareLogMonoTime),
+    carControl: [...context.carControl].sort(compareLogMonoTime),
     lateralPlan: [...context.lateralPlan].sort(compareLogMonoTime),
     liveLocationKalman: [...context.liveLocationKalman].sort(compareLogMonoTime),
     livePose: [...context.livePose].sort(compareLogMonoTime),
@@ -1044,6 +1072,7 @@ function sortedSteeringContext(context: SteeringContextMessages): SteeringContex
 function alignSteeringContext(logMonoTime: bigint, context: SteeringContextMessages): AlignedSteeringContext {
   return {
     controlsState: nearestByLogMonoTime(context.controlsState, logMonoTime, 250_000_000n),
+    carControl: nearestByLogMonoTime(context.carControl, logMonoTime, 250_000_000n),
     lateralPlan: nearestByLogMonoTime(context.lateralPlan, logMonoTime, 250_000_000n),
     liveLocationKalman: nearestByLogMonoTime(context.liveLocationKalman, logMonoTime, 500_000_000n),
     livePose: nearestByLogMonoTime(context.livePose, logMonoTime, 250_000_000n),
@@ -1269,6 +1298,8 @@ function isQualifyingSteeringSample(sample: SteeringSample, filters: SteeringWin
 interface SteeringStraightnessInput extends CarStateMessage {
   controlsCurvature: number | null;
   desiredCurvature: number | null;
+  carControlCurvature: number | null;
+  carControlCurrentCurvature: number | null;
   lateralPlanCurvature: number | null;
   locationYawRate: number | null;
   locationSpeed: number | null;
@@ -1322,9 +1353,14 @@ function steeringStraightnessScore(sample: SteeringStraightnessInput, filters: S
     components.push(normalizedStraightComponent(Math.abs(medianFinite(yawSignals) ?? 0), yawThreshold));
   }
 
-  const curvatureSignals = [sample.controlsCurvature, sample.desiredCurvature, sample.lateralPlanCurvature, sample.modelDesiredCurvature].filter(
-    (value): value is number => value !== null,
-  );
+  const curvatureSignals = [
+    sample.controlsCurvature,
+    sample.desiredCurvature,
+    sample.carControlCurvature,
+    sample.carControlCurrentCurvature,
+    sample.lateralPlanCurvature,
+    sample.modelDesiredCurvature,
+  ].filter((value): value is number => value !== null);
   if (curvatureSignals.length > 0) {
     components.push(normalizedStraightComponent(Math.abs(medianFinite(curvatureSignals) ?? 0), curvatureThreshold));
   }
@@ -1630,13 +1666,14 @@ function steeringCaveats({
   if (
     totalCarStateMessages > 0 &&
     signalAvailability.controlsStateMessages +
+      signalAvailability.carControlMessages +
       signalAvailability.lateralPlanMessages +
       signalAvailability.liveLocationKalmanMessages +
       signalAvailability.livePoseMessages +
       signalAvailability.modelV2Messages ===
       0
   ) {
-    caveats.push("No controlsState, lateralPlan, modelV2, liveLocationKalman, or livePose context was decoded, so straightness relied on carState only.");
+    caveats.push("No controlsState, carControl, lateralPlan, modelV2, liveLocationKalman, or livePose context was decoded, so straightness relied on carState only.");
   }
   return caveats;
 }

@@ -11,8 +11,9 @@ just enough Cap'n Proto to summarize:
   segments by speed and steady steering
 - `carState` speed, steering angle, steering rate, steering torque, steering
   pressed, standstill, blinker, and yaw-rate fields
-- rlog context from `controlsState`, `modelV2.action`, deprecated
-  `lateralPlan`, deprecated `liveLocationKalman`, and `livePose` when present
+- rlog context from `controlsState`, `carControl`, `modelV2.action`,
+  deprecated `lateralPlan`, deprecated `liveLocationKalman`, and `livePose`
+  when present
 - stable straight-driving windows that pass speed-aware yaw-rate, curvature,
   steering-rate, blinker, standstill, driver-steering, sample-gap, duration,
   and angle-range filters

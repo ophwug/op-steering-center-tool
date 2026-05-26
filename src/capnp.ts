@@ -1,6 +1,7 @@
 import {
   CALIBRATION_STATUS_NAMES,
   CAN_UNION_TAG,
+  CAR_CONTROL_UNION_TAG,
   CAR_PARAMS_UNION_TAG,
   CAR_STATE_UNION_TAG,
   CONTROLS_STATE_UNION_TAG,
@@ -108,6 +109,16 @@ export interface ControlsStateMessage {
   lateralPlanMonoTime: bigint;
 }
 
+export interface CarControlMessage {
+  logMonoTime: bigint;
+  enabled: boolean;
+  latActive: boolean;
+  currentCurvature: number;
+  actuatorCurvature: number | null;
+  actuatorSteeringAngleDeg: number | null;
+  actuatorTorque: number | null;
+}
+
 export interface LateralPlanMessage {
   logMonoTime: bigint;
   curvatures: number[];
@@ -133,6 +144,7 @@ export interface ModelV2Message {
 
 export interface SteeringContextMessages {
   controlsState: ControlsStateMessage[];
+  carControl: CarControlMessage[];
   lateralPlan: LateralPlanMessage[];
   liveLocationKalman: LiveLocationKalmanMessage[];
   livePose: LivePoseMessage[];
@@ -260,6 +272,22 @@ const CONTROLS_STATE_DATA_FIELDS = {
   curvature: 34,
   desiredCurvature: 44,
   lateralPlanMonoTime: 20,
+} as const;
+
+const CAR_CONTROL_POINTER_FIELDS = {
+  actuators: 6,
+} as const;
+
+const CAR_CONTROL_DATA_FIELDS = {
+  enabledBool: 0,
+  latActiveBool: 11,
+  currentCurvature: 17,
+} as const;
+
+const CAR_CONTROL_ACTUATORS_DATA_FIELDS = {
+  torque: 2,
+  steeringAngleDeg: 3,
+  curvature: 7,
 } as const;
 
 const LATERAL_PLAN_POINTER_FIELDS = {
@@ -456,6 +484,7 @@ export function findCarStateMessages(bytes: Uint8Array): CarStateMessage[] {
 export function findSteeringContextMessages(bytes: Uint8Array): SteeringContextMessages {
   const messages: SteeringContextMessages = {
     controlsState: [],
+    carControl: [],
     lateralPlan: [],
     liveLocationKalman: [],
     livePose: [],
@@ -471,6 +500,11 @@ export function findSteeringContextMessages(bytes: Uint8Array): SteeringContextM
     if (unionTag === CONTROLS_STATE_UNION_TAG) {
       const message = readControlsStateMessageFromRoot(root, segments);
       if (message) messages.controlsState.push(message);
+      continue;
+    }
+    if (unionTag === CAR_CONTROL_UNION_TAG) {
+      const message = readCarControlMessageFromRoot(root, segments);
+      if (message) messages.carControl.push(message);
       continue;
     }
     if (unionTag === LATERAL_PLAN_DEPRECATED_UNION_TAG) {
@@ -630,6 +664,24 @@ function readControlsStateMessageFromRoot(root: StructRef & { segmentIndex: numb
     curvature: getFloat32ByIndex(controlsState, CONTROLS_STATE_DATA_FIELDS.curvature),
     desiredCurvature: getFloat32ByIndex(controlsState, CONTROLS_STATE_DATA_FIELDS.desiredCurvature),
     lateralPlanMonoTime: getBigUint64ByIndex(controlsState, CONTROLS_STATE_DATA_FIELDS.lateralPlanMonoTime),
+  };
+}
+
+function readCarControlMessageFromRoot(root: StructRef & { segmentIndex: number }, segments: SegmentData[]): CarControlMessage | null {
+  const carControl = readStructPointer(segments, root.segmentIndex, pointerFieldOffset(root, EVENT_POINTER_FIELD_0));
+  if (!carControl) return null;
+  const actuators =
+    carControl.pointerCount > CAR_CONTROL_POINTER_FIELDS.actuators
+      ? readStructPointer([carControl.segment], 0, pointerFieldOffset(carControl, CAR_CONTROL_POINTER_FIELDS.actuators))
+      : null;
+  return {
+    logMonoTime: getBigUint64(root, 0),
+    enabled: getBoolByIndex(carControl, CAR_CONTROL_DATA_FIELDS.enabledBool),
+    latActive: getBoolByIndex(carControl, CAR_CONTROL_DATA_FIELDS.latActiveBool),
+    currentCurvature: getFloat32ByIndex(carControl, CAR_CONTROL_DATA_FIELDS.currentCurvature),
+    actuatorCurvature: actuators ? getFloat32ByIndex(actuators, CAR_CONTROL_ACTUATORS_DATA_FIELDS.curvature) : null,
+    actuatorSteeringAngleDeg: actuators ? getFloat32ByIndex(actuators, CAR_CONTROL_ACTUATORS_DATA_FIELDS.steeringAngleDeg) : null,
+    actuatorTorque: actuators ? getFloat32ByIndex(actuators, CAR_CONTROL_ACTUATORS_DATA_FIELDS.torque) : null,
   };
 }
 

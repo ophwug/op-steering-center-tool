@@ -57,6 +57,7 @@ describe("Cap'n Proto log parsing", () => {
     const context = findSteeringContextMessages(
       concatBytes([
         controlsStateMessage(),
+        carControlMessage(),
         lateralPlanMessage(),
         liveLocationKalmanMessage(),
         livePoseMessage(),
@@ -67,6 +68,13 @@ describe("Cap'n Proto log parsing", () => {
     expect(context.controlsState[0].curvature).toBeCloseTo(0.0004);
     expect(context.controlsState[0].desiredCurvature).toBeCloseTo(0.0005);
     expect(context.controlsState[0].lateralPlanMonoTime).toBe(99n);
+    expect(context.carControl[0]).toMatchObject({
+      enabled: true,
+      latActive: true,
+    });
+    expect(context.carControl[0].currentCurvature).toBeCloseTo(0.0007);
+    expect(context.carControl[0].actuatorCurvature).toBeCloseTo(0.0008);
+    expect(context.carControl[0].actuatorSteeringAngleDeg).toBeCloseTo(1.2);
     expect(context.lateralPlan[0].firstCurvature).toBeCloseTo(0.0003);
     expect(context.lateralPlan[0].curvatures[1]).toBeCloseTo(0.0002);
     expect(context.liveLocationKalman[0].speedCalibrated).toBeCloseTo(20);
@@ -169,6 +177,20 @@ function controlsStateMessage(): Uint8Array {
   builder.view.setBigUint64(controlsState.dataOffset + 20 * 8, 99n, true);
   builder.view.setFloat32(controlsState.dataOffset + 34 * 4, 0.0004, true);
   builder.view.setFloat32(controlsState.dataOffset + 44 * 4, 0.0005, true);
+  return builder.finish();
+}
+
+function carControlMessage(): Uint8Array {
+  const builder = new SegmentBuilder(512);
+  const event = builder.initEvent(22);
+  const carControl = builder.writeStructPointer(event.pointerOffset, 10, 7);
+  builder.setBool(carControl.dataOffset, 0, true);
+  builder.setBool(carControl.dataOffset, 11, true);
+  builder.view.setFloat32(carControl.dataOffset + 17 * 4, 0.0007, true);
+  const actuators = builder.writeStructPointer(carControl.pointerOffset + 6 * 8, 4, 0);
+  builder.view.setFloat32(actuators.dataOffset + 2 * 4, 0.11, true);
+  builder.view.setFloat32(actuators.dataOffset + 3 * 4, 1.2, true);
+  builder.view.setFloat32(actuators.dataOffset + 7 * 4, 0.0008, true);
   return builder.finish();
 }
 
